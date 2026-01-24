@@ -289,3 +289,5 @@ impl Insurance {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 }
+
+mod test;
