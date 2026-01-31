@@ -373,6 +373,12 @@
                                     "val": {
                                       "u64": 2000000000
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "unlock_date"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -914,7 +920,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only the goal owner can withdraw funds' from contract function 'Symbol(obj#161)'"
+                  "string": "caught panic 'Only the goal owner can withdraw funds' from contract function 'Symbol(obj#171)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

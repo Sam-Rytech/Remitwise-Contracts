@@ -373,6 +373,12 @@
                                     "val": {
                                       "u64": 2000000000
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "unlock_date"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -914,7 +920,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Insufficient balance' from contract function 'Symbol(obj#159)'"
+                  "string": "caught panic 'Insufficient balance' from contract function 'Symbol(obj#169)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

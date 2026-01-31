@@ -318,6 +318,12 @@
                                     "val": {
                                       "u64": 2000000000
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "unlock_date"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -389,6 +395,12 @@
                                     "val": {
                                       "u64": 2000000000
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "unlock_date"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -853,6 +865,12 @@
                       "val": {
                         "u64": 2000000000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "unlock_date"
+                      },
+                      "val": "void"
                     }
                   ]
                 },
@@ -919,6 +937,12 @@
                       "val": {
                         "u64": 2000000000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "unlock_date"
+                      },
+                      "val": "void"
                     }
                   ]
                 }

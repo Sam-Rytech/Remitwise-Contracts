@@ -168,6 +168,12 @@
                                     "val": {
                                       "bool": false
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "schedule_id"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }

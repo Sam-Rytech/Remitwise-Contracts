@@ -215,6 +215,12 @@
                                     "val": {
                                       "bool": true
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "schedule_id"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -307,6 +313,12 @@
                                     "val": {
                                       "bool": true
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "schedule_id"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -397,6 +409,12 @@
                                     "val": {
                                       "bool": true
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "schedule_id"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -861,6 +879,12 @@
                   "val": {
                     "bool": true
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "schedule_id"
+                  },
+                  "val": "void"
                 }
               ]
             }
@@ -1080,6 +1104,12 @@
                   "val": {
                     "bool": true
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "schedule_id"
+                  },
+                  "val": "void"
                 }
               ]
             }

@@ -64,6 +64,33 @@ pub struct AuditEntry {
     pub success: bool,
 }
 
+/// Schedule for automatic remittance splits
+#[contracttype]
+#[derive(Clone)]
+pub struct RemittanceSchedule {
+    pub id: u32,
+    pub owner: Address,
+    pub amount: i128,
+    pub next_due: u64,
+    pub interval: u64,
+    pub recurring: bool,
+    pub active: bool,
+    pub created_at: u64,
+    pub last_executed: Option<u64>,
+    pub missed_count: u32,
+}
+
+/// Schedule event types
+#[contracttype]
+#[derive(Clone)]
+pub enum ScheduleEvent {
+    Created,
+    Executed,
+    Missed,
+    Modified,
+    Cancelled,
+}
+
 const SNAPSHOT_VERSION: u32 = 1;
 const MAX_AUDIT_ENTRIES: u32 = 100;
 
@@ -512,6 +539,182 @@ impl RemittanceSplit {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Create a schedule for automatic remittance splits
+    pub fn create_remittance_schedule(
+        env: Env,
+        owner: Address,
+        amount: i128,
+        next_due: u64,
+        interval: u64,
+    ) -> u32 {
+        owner.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let current_time = env.ledger().timestamp();
+        if next_due <= current_time {
+            panic!("Next due date must be in the future");
+        }
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, RemittanceSchedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("REM_SCH"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let next_schedule_id = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("NEXT_RSCH"))
+            .unwrap_or(0u32)
+            + 1;
+
+        let schedule = RemittanceSchedule {
+            id: next_schedule_id,
+            owner: owner.clone(),
+            amount,
+            next_due,
+            interval,
+            recurring: interval > 0,
+            active: true,
+            created_at: current_time,
+            last_executed: None,
+            missed_count: 0,
+        };
+
+        schedules.set(next_schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("REM_SCH"), &schedules);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("NEXT_RSCH"), &next_schedule_id);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Created),
+            (next_schedule_id, owner),
+        );
+
+        next_schedule_id
+    }
+
+    /// Modify a remittance schedule
+    pub fn modify_remittance_schedule(
+        env: Env,
+        caller: Address,
+        schedule_id: u32,
+        amount: i128,
+        next_due: u64,
+        interval: u64,
+    ) -> bool {
+        caller.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let current_time = env.ledger().timestamp();
+        if next_due <= current_time {
+            panic!("Next due date must be in the future");
+        }
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, RemittanceSchedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("REM_SCH"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut schedule = schedules.get(schedule_id).expect("Schedule not found");
+
+        if schedule.owner != caller {
+            panic!("Only the schedule owner can modify it");
+        }
+
+        schedule.amount = amount;
+        schedule.next_due = next_due;
+        schedule.interval = interval;
+        schedule.recurring = interval > 0;
+
+        schedules.set(schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("REM_SCH"), &schedules);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Modified),
+            (schedule_id, caller),
+        );
+
+        true
+    }
+
+    /// Cancel a remittance schedule
+    pub fn cancel_remittance_schedule(env: Env, caller: Address, schedule_id: u32) -> bool {
+        caller.require_auth();
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, RemittanceSchedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("REM_SCH"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut schedule = schedules.get(schedule_id).expect("Schedule not found");
+
+        if schedule.owner != caller {
+            panic!("Only the schedule owner can cancel it");
+        }
+
+        schedule.active = false;
+
+        schedules.set(schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("REM_SCH"), &schedules);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Cancelled),
+            (schedule_id, caller),
+        );
+
+        true
+    }
+
+    /// Get all remittance schedules for an owner
+    pub fn get_remittance_schedules(env: Env, owner: Address) -> Vec<RemittanceSchedule> {
+        let schedules: Map<u32, RemittanceSchedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("REM_SCH"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut result = Vec::new(&env);
+        for (_, schedule) in schedules.iter() {
+            if schedule.owner == owner {
+                result.push_back(schedule);
+            }
+        }
+        result
+    }
+
+    /// Get a specific remittance schedule
+    pub fn get_remittance_schedule(env: Env, schedule_id: u32) -> Option<RemittanceSchedule> {
+        let schedules: Map<u32, RemittanceSchedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("REM_SCH"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        schedules.get(schedule_id)
     }
 }
 

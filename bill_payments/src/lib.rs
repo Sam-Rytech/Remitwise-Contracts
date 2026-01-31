@@ -4,13 +4,12 @@ use soroban_sdk::{
     Vec,
 };
 
-// Storage TTL constants for active data
+mod schedule;
+use schedule::{Schedule, ScheduleEvent};
+
+// Storage TTL constants
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 17280; // ~1 day
 const INSTANCE_BUMP_AMOUNT: u32 = 518400; // ~30 days
-
-// Storage TTL constants for archived data (longer retention, less frequent access)
-const ARCHIVE_LIFETIME_THRESHOLD: u32 = 17280; // ~1 day
-const ARCHIVE_BUMP_AMOUNT: u32 = 2592000; // ~180 days (6 months)
 
 /// Bill data structure with owner tracking for access control
 #[derive(Clone)]
@@ -26,6 +25,7 @@ pub struct Bill {
     pub paid: bool,
     pub created_at: u64,
     pub paid_at: Option<u64>,
+    pub schedule_id: Option<u32>,
 }
 
 #[contracterror]
@@ -45,38 +45,6 @@ pub enum Error {
 pub enum BillEvent {
     Created,
     Paid,
-}
-
-/// Archived bill - compressed record with essential fields only
-#[contracttype]
-#[derive(Clone)]
-pub struct ArchivedBill {
-    pub id: u32,
-    pub owner: Address,
-    pub name: String,
-    pub amount: i128,
-    pub paid_at: u64,
-    pub archived_at: u64,
-}
-
-/// Storage statistics for monitoring
-#[contracttype]
-#[derive(Clone)]
-pub struct StorageStats {
-    pub active_bills: u32,
-    pub archived_bills: u32,
-    pub total_unpaid_amount: i128,
-    pub total_archived_amount: i128,
-    pub last_updated: u64,
-}
-
-/// Events for archival operations
-#[contracttype]
-#[derive(Clone)]
-pub enum ArchiveEvent {
-    BillsArchived,
-    BillRestored,
-    ArchivesCleaned,
 }
 
 #[contract]
@@ -148,6 +116,7 @@ impl BillPayments {
             paid: false,
             created_at: current_time,
             paid_at: None,
+            schedule_id: None,
         };
 
         let bill_owner = bill.owner.clone();
@@ -229,6 +198,7 @@ impl BillPayments {
                 paid: false,
                 created_at: current_time,
                 paid_at: None,
+                schedule_id: bill.schedule_id,
             };
             bills.set(next_id, next_bill);
             env.storage()
@@ -379,249 +349,6 @@ impl BillPayments {
         result
     }
 
-    /// Archive paid bills that were paid before the specified timestamp.
-    /// Moves paid bills from active storage to archive storage.
-    ///
-    /// # Arguments
-    /// * `caller` - Address of the caller (must authorize)
-    /// * `before_timestamp` - Archive bills paid before this timestamp
-    ///
-    /// # Returns
-    /// Number of bills archived
-    pub fn archive_paid_bills(env: Env, caller: Address, before_timestamp: u64) -> u32 {
-        caller.require_auth();
-        Self::extend_instance_ttl(&env);
-
-        let mut bills: Map<u32, Bill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("BILLS"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let mut archived: Map<u32, ArchivedBill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let current_time = env.ledger().timestamp();
-        let mut archived_count = 0u32;
-        let mut to_remove: Vec<u32> = Vec::new(&env);
-
-        for (id, bill) in bills.iter() {
-            if let Some(paid_at) = bill.paid_at {
-                if bill.paid && paid_at < before_timestamp {
-                    let archived_bill = ArchivedBill {
-                        id: bill.id,
-                        owner: bill.owner.clone(),
-                        name: bill.name.clone(),
-                        amount: bill.amount,
-                        paid_at,
-                        archived_at: current_time,
-                    };
-                    archived.set(id, archived_bill);
-                    to_remove.push_back(id);
-                    archived_count += 1;
-                }
-            }
-        }
-
-        for i in 0..to_remove.len() {
-            if let Some(id) = to_remove.get(i) {
-                bills.remove(id);
-            }
-        }
-
-        env.storage()
-            .instance()
-            .set(&symbol_short!("BILLS"), &bills);
-        env.storage()
-            .instance()
-            .set(&symbol_short!("ARCH_BILL"), &archived);
-
-        Self::extend_archive_ttl(&env);
-        Self::update_storage_stats(&env);
-
-        env.events().publish(
-            (symbol_short!("bill"), ArchiveEvent::BillsArchived),
-            (archived_count, caller),
-        );
-
-        archived_count
-    }
-
-    /// Get all archived bills for a specific owner
-    ///
-    /// # Arguments
-    /// * `owner` - Address of the bill owner
-    ///
-    /// # Returns
-    /// Vec of all ArchivedBill structs belonging to the owner
-    pub fn get_archived_bills(env: Env, owner: Address) -> Vec<ArchivedBill> {
-        let archived: Map<u32, ArchivedBill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let mut result = Vec::new(&env);
-        for (_, bill) in archived.iter() {
-            if bill.owner == owner {
-                result.push_back(bill);
-            }
-        }
-        result
-    }
-
-    /// Get a specific archived bill by ID
-    ///
-    /// # Arguments
-    /// * `bill_id` - ID of the archived bill
-    ///
-    /// # Returns
-    /// ArchivedBill struct or None if not found
-    pub fn get_archived_bill(env: Env, bill_id: u32) -> Option<ArchivedBill> {
-        let archived: Map<u32, ArchivedBill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        archived.get(bill_id)
-    }
-
-    /// Restore an archived bill back to active storage
-    ///
-    /// # Arguments
-    /// * `caller` - Address of the caller (must be the bill owner)
-    /// * `bill_id` - ID of the bill to restore
-    ///
-    /// # Returns
-    /// Ok(()) if restoration was successful
-    ///
-    /// # Errors
-    /// * `BillNotFound` - If bill is not found in archive
-    /// * `Unauthorized` - If caller is not the bill owner
-    pub fn restore_bill(env: Env, caller: Address, bill_id: u32) -> Result<(), Error> {
-        caller.require_auth();
-        Self::extend_instance_ttl(&env);
-
-        let mut archived: Map<u32, ArchivedBill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let archived_bill = archived.get(bill_id).ok_or(Error::BillNotFound)?;
-
-        if archived_bill.owner != caller {
-            return Err(Error::Unauthorized);
-        }
-
-        let mut bills: Map<u32, Bill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("BILLS"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let restored_bill = Bill {
-            id: archived_bill.id,
-            owner: archived_bill.owner.clone(),
-            name: archived_bill.name.clone(),
-            amount: archived_bill.amount,
-            due_date: env.ledger().timestamp() + 2592000, // Set new due date 30 days from now
-            recurring: false,
-            frequency_days: 0,
-            paid: true,
-            created_at: archived_bill.paid_at,
-            paid_at: Some(archived_bill.paid_at),
-        };
-
-        bills.set(bill_id, restored_bill);
-        archived.remove(bill_id);
-
-        env.storage()
-            .instance()
-            .set(&symbol_short!("BILLS"), &bills);
-        env.storage()
-            .instance()
-            .set(&symbol_short!("ARCH_BILL"), &archived);
-
-        Self::update_storage_stats(&env);
-
-        env.events().publish(
-            (symbol_short!("bill"), ArchiveEvent::BillRestored),
-            (bill_id, caller),
-        );
-
-        Ok(())
-    }
-
-    /// Permanently delete old archives before specified timestamp
-    ///
-    /// # Arguments
-    /// * `caller` - Address of the caller (must authorize)
-    /// * `before_timestamp` - Delete archives created before this timestamp
-    ///
-    /// # Returns
-    /// Number of archives deleted
-    pub fn bulk_cleanup_bills(env: Env, caller: Address, before_timestamp: u64) -> u32 {
-        caller.require_auth();
-        Self::extend_instance_ttl(&env);
-
-        let mut archived: Map<u32, ArchivedBill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(&env));
-
-        let mut deleted_count = 0u32;
-        let mut to_remove: Vec<u32> = Vec::new(&env);
-
-        for (id, bill) in archived.iter() {
-            if bill.archived_at < before_timestamp {
-                to_remove.push_back(id);
-                deleted_count += 1;
-            }
-        }
-
-        for i in 0..to_remove.len() {
-            if let Some(id) = to_remove.get(i) {
-                archived.remove(id);
-            }
-        }
-
-        env.storage()
-            .instance()
-            .set(&symbol_short!("ARCH_BILL"), &archived);
-
-        Self::update_storage_stats(&env);
-
-        env.events().publish(
-            (symbol_short!("bill"), ArchiveEvent::ArchivesCleaned),
-            (deleted_count, caller),
-        );
-
-        deleted_count
-    }
-
-    /// Get storage usage statistics
-    ///
-    /// # Returns
-    /// StorageStats struct with current storage metrics
-    pub fn get_storage_stats(env: Env) -> StorageStats {
-        env.storage()
-            .instance()
-            .get(&symbol_short!("STOR_STAT"))
-            .unwrap_or(StorageStats {
-                active_bills: 0,
-                archived_bills: 0,
-                total_unpaid_amount: 0,
-                total_archived_amount: 0,
-                last_updated: 0,
-            })
-    }
-
     /// Extend the TTL of instance storage
     fn extend_instance_ttl(env: &Env) {
         env.storage()
@@ -629,54 +356,317 @@ impl BillPayments {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
-    /// Extend the TTL of archive storage with longer duration
-    fn extend_archive_ttl(env: &Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(ARCHIVE_LIFETIME_THRESHOLD, ARCHIVE_BUMP_AMOUNT);
-    }
+    /// Create a schedule for automatic bill payment
+    ///
+    /// # Arguments
+    /// * `owner` - Address of the schedule owner (must authorize)
+    /// * `bill_id` - ID of the bill to schedule
+    /// * `next_due` - Next execution timestamp
+    /// * `interval` - Interval in seconds for recurring schedules (0 for one-time)
+    ///
+    /// # Returns
+    /// The ID of the created schedule
+    pub fn create_schedule(
+        env: Env,
+        owner: Address,
+        bill_id: u32,
+        next_due: u64,
+        interval: u64,
+    ) -> Result<u32, Error> {
+        owner.require_auth();
 
-    /// Update storage statistics
-    fn update_storage_stats(env: &Env) {
         let bills: Map<u32, Bill> = env
             .storage()
             .instance()
             .get(&symbol_short!("BILLS"))
-            .unwrap_or_else(|| Map::new(env));
+            .unwrap_or_else(|| Map::new(&env));
 
-        let archived: Map<u32, ArchivedBill> = env
+        let mut bill = bills.get(bill_id).ok_or(Error::BillNotFound)?;
+
+        if bill.owner != owner {
+            return Err(Error::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if next_due <= current_time {
+            return Err(Error::InvalidAmount);
+        }
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, Schedule> = env
             .storage()
             .instance()
-            .get(&symbol_short!("ARCH_BILL"))
-            .unwrap_or_else(|| Map::new(env));
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
 
-        let mut active_count = 0u32;
-        let mut unpaid_amount = 0i128;
-        for (_, bill) in bills.iter() {
-            active_count += 1;
-            if !bill.paid {
-                unpaid_amount = unpaid_amount.saturating_add(bill.amount);
-            }
-        }
+        let next_schedule_id = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("NEXT_SCH"))
+            .unwrap_or(0u32)
+            + 1;
 
-        let mut archived_count = 0u32;
-        let mut archived_amount = 0i128;
-        for (_, bill) in archived.iter() {
-            archived_count += 1;
-            archived_amount = archived_amount.saturating_add(bill.amount);
-        }
-
-        let stats = StorageStats {
-            active_bills: active_count,
-            archived_bills: archived_count,
-            total_unpaid_amount: unpaid_amount,
-            total_archived_amount: archived_amount,
-            last_updated: env.ledger().timestamp(),
+        let schedule = Schedule {
+            id: next_schedule_id,
+            owner: owner.clone(),
+            next_due,
+            interval,
+            recurring: interval > 0,
+            active: true,
+            created_at: current_time,
+            last_executed: None,
+            missed_count: 0,
         };
+
+        bill.schedule_id = Some(next_schedule_id);
+
+        schedules.set(next_schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("SCHEDULES"), &schedules);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("NEXT_SCH"), &next_schedule_id);
+
+        let mut bills_mut = bills;
+        bills_mut.set(bill_id, bill);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("BILLS"), &bills_mut);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Created),
+            (next_schedule_id, owner),
+        );
+
+        Ok(next_schedule_id)
+    }
+
+    /// Modify an existing schedule
+    pub fn modify_schedule(
+        env: Env,
+        caller: Address,
+        schedule_id: u32,
+        next_due: u64,
+        interval: u64,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, Schedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut schedule = schedules.get(schedule_id).ok_or(Error::BillNotFound)?;
+
+        if schedule.owner != caller {
+            return Err(Error::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if next_due <= current_time {
+            return Err(Error::InvalidAmount);
+        }
+
+        schedule.next_due = next_due;
+        schedule.interval = interval;
+        schedule.recurring = interval > 0;
+
+        schedules.set(schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("SCHEDULES"), &schedules);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Modified),
+            (schedule_id, caller),
+        );
+
+        Ok(())
+    }
+
+    /// Cancel a schedule
+    pub fn cancel_schedule(env: Env, caller: Address, schedule_id: u32) -> Result<(), Error> {
+        caller.require_auth();
+
+        Self::extend_instance_ttl(&env);
+
+        let mut schedules: Map<u32, Schedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut schedule = schedules.get(schedule_id).ok_or(Error::BillNotFound)?;
+
+        if schedule.owner != caller {
+            return Err(Error::Unauthorized);
+        }
+
+        schedule.active = false;
+
+        schedules.set(schedule_id, schedule);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("SCHEDULES"), &schedules);
+
+        env.events().publish(
+            (symbol_short!("schedule"), ScheduleEvent::Cancelled),
+            (schedule_id, caller),
+        );
+
+        Ok(())
+    }
+
+    /// Execute due schedules (public, callable by anyone - keeper pattern)
+    pub fn execute_due_schedules(env: Env) -> Vec<u32> {
+        Self::extend_instance_ttl(&env);
+
+        let current_time = env.ledger().timestamp();
+        let mut executed = Vec::new(&env);
+
+        let mut schedules: Map<u32, Schedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut bills: Map<u32, Bill> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("BILLS"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        for (schedule_id, mut schedule) in schedules.iter() {
+            if !schedule.active || schedule.next_due > current_time {
+                continue;
+            }
+
+            let bill_id = Self::find_bill_by_schedule(&bills, schedule_id);
+            if let Some(bid) = bill_id {
+                if let Some(mut bill) = bills.get(bid) {
+                    if !bill.paid {
+                        bill.paid = true;
+                        bill.paid_at = Some(current_time);
+
+                        if bill.recurring {
+                            let next_due_date = bill.due_date + (bill.frequency_days as u64 * 86400);
+                            let next_id = env
+                                .storage()
+                                .instance()
+                                .get(&symbol_short!("NEXT_ID"))
+                                .unwrap_or(0u32)
+                                + 1;
+
+                            let next_bill = Bill {
+                                id: next_id,
+                                owner: bill.owner.clone(),
+                                name: bill.name.clone(),
+                                amount: bill.amount,
+                                due_date: next_due_date,
+                                recurring: true,
+                                frequency_days: bill.frequency_days,
+                                paid: false,
+                                created_at: current_time,
+                                paid_at: None,
+                                schedule_id: bill.schedule_id,
+                            };
+                            bills.set(next_id, next_bill);
+                            env.storage()
+                                .instance()
+                                .set(&symbol_short!("NEXT_ID"), &next_id);
+                        }
+
+                        bills.set(bid, bill);
+
+                        env.events().publish(
+                            (symbol_short!("bill"), BillEvent::Paid),
+                            (bid, schedule.owner.clone()),
+                        );
+                    }
+                }
+            }
+
+            schedule.last_executed = Some(current_time);
+
+            if schedule.recurring && schedule.interval > 0 {
+                let mut missed = 0u32;
+                let mut next = schedule.next_due + schedule.interval;
+                while next <= current_time {
+                    missed += 1;
+                    next += schedule.interval;
+                }
+                schedule.missed_count += missed;
+                schedule.next_due = next;
+
+                if missed > 0 {
+                    env.events().publish(
+                        (symbol_short!("schedule"), ScheduleEvent::Missed),
+                        (schedule_id, missed),
+                    );
+                }
+            } else {
+                schedule.active = false;
+            }
+
+            schedules.set(schedule_id, schedule);
+            executed.push_back(schedule_id);
+
+            env.events().publish(
+                (symbol_short!("schedule"), ScheduleEvent::Executed),
+                schedule_id,
+            );
+        }
 
         env.storage()
             .instance()
-            .set(&symbol_short!("STOR_STAT"), &stats);
+            .set(&symbol_short!("SCHEDULES"), &schedules);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("BILLS"), &bills);
+
+        executed
+    }
+
+    /// Get all schedules for an owner
+    pub fn get_schedules(env: Env, owner: Address) -> Vec<Schedule> {
+        let schedules: Map<u32, Schedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut result = Vec::new(&env);
+        for (_, schedule) in schedules.iter() {
+            if schedule.owner == owner {
+                result.push_back(schedule);
+            }
+        }
+        result
+    }
+
+    /// Get a specific schedule
+    pub fn get_schedule(env: Env, schedule_id: u32) -> Option<Schedule> {
+        let schedules: Map<u32, Schedule> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("SCHEDULES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        schedules.get(schedule_id)
+    }
+
+    fn find_bill_by_schedule(bills: &Map<u32, Bill>, schedule_id: u32) -> Option<u32> {
+        for (bill_id, bill) in bills.iter() {
+            if bill.schedule_id == Some(schedule_id) {
+                return Some(bill_id);
+            }
+        }
+        None
     }
 }
 

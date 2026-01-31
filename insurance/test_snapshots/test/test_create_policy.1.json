@@ -165,6 +165,12 @@
                                     "val": {
                                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "schedule_id"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -456,6 +462,12 @@
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "schedule_id"
+                  },
+                  "val": "void"
                 }
               ]
             }
