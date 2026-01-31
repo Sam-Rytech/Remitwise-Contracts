@@ -1,7 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, symbol_short, Address, Env, Map,
-    Vec,
+    contract, contractclient, contractimpl, contracttype, symbol_short, Address, Env, Map, Vec,
 };
 
 // Storage TTL constants for active data
@@ -254,7 +253,9 @@ impl ReportingContract {
         }
 
         Self::extend_instance_ttl(&env);
-        env.storage().instance().set(&symbol_short!("ADMIN"), &admin);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("ADMIN"), &admin);
 
         true
     }
@@ -506,11 +507,7 @@ impl ReportingContract {
     }
 
     /// Calculate financial health score
-    pub fn calculate_health_score(
-        env: Env,
-        user: Address,
-        _total_remittance: i128,
-    ) -> HealthScore {
+    pub fn calculate_health_score(env: Env, user: Address, _total_remittance: i128) -> HealthScore {
         let addresses: ContractAddresses = env
             .storage()
             .instance()
@@ -557,11 +554,7 @@ impl ReportingContract {
         // Insurance score (0-20 points)
         let insurance_client = InsuranceClient::new(&env, &addresses.insurance);
         let policies = insurance_client.get_active_policies(&user);
-        let insurance_score = if !policies.is_empty() {
-            20
-        } else {
-            0
-        };
+        let insurance_score = if !policies.is_empty() { 20 } else { 0 };
 
         let total_score = savings_score + bills_score + insurance_score;
 
@@ -581,13 +574,21 @@ impl ReportingContract {
         period_start: u64,
         period_end: u64,
     ) -> FinancialHealthReport {
-        let health_score = Self::calculate_health_score(env.clone(), user.clone(), total_remittance);
-        let remittance_summary =
-            Self::get_remittance_summary(env.clone(), user.clone(), total_remittance, period_start, period_end);
-        let savings_report = Self::get_savings_report(env.clone(), user.clone(), period_start, period_end);
+        let health_score =
+            Self::calculate_health_score(env.clone(), user.clone(), total_remittance);
+        let remittance_summary = Self::get_remittance_summary(
+            env.clone(),
+            user.clone(),
+            total_remittance,
+            period_start,
+            period_end,
+        );
+        let savings_report =
+            Self::get_savings_report(env.clone(), user.clone(), period_start, period_end);
         let bill_compliance =
             Self::get_bill_compliance_report(env.clone(), user.clone(), period_start, period_end);
-        let insurance_report = Self::get_insurance_report(env.clone(), user, period_start, period_end);
+        let insurance_report =
+            Self::get_insurance_report(env.clone(), user, period_start, period_end);
 
         let generated_at = env.ledger().timestamp();
 

@@ -1,7 +1,25 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as AddressTrait, Ledger, LedgerInfo},
+    Address, Env,
+};
+
+fn set_time(env: &Env, timestamp: u64) {
+    let proto = env.ledger().protocol_version();
+
+    env.ledger().set(LedgerInfo {
+        protocol_version: proto,
+        sequence_number: 1,
+        timestamp,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 1,
+        min_persistent_entry_ttl: 1,
+        max_entry_ttl: 100000,
+    });
+}
 
 #[test]
 fn test_initialize_split() {
@@ -194,4 +212,119 @@ fn test_calculate_complex_rounding() {
     let tiny_amounts = client.calculate_split(&3);
     assert_eq!(tiny_amounts.get(0).unwrap(), 0);
     assert_eq!(tiny_amounts.get(3).unwrap(), 3);
+}
+
+#[test]
+fn test_create_remittance_schedule() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 1000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    let schedule_id = client.create_remittance_schedule(&owner, &10000, &3000, &86400);
+    assert_eq!(schedule_id, 1);
+
+    let schedule = client.get_remittance_schedule(&schedule_id);
+    assert!(schedule.is_some());
+    let schedule = schedule.unwrap();
+    assert_eq!(schedule.amount, 10000);
+    assert_eq!(schedule.next_due, 3000);
+    assert_eq!(schedule.interval, 86400);
+    assert!(schedule.active);
+}
+
+#[test]
+fn test_modify_remittance_schedule() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 1000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    let schedule_id = client.create_remittance_schedule(&owner, &10000, &3000, &86400);
+    client.modify_remittance_schedule(&owner, &schedule_id, &15000, &4000, &172800);
+
+    let schedule = client.get_remittance_schedule(&schedule_id).unwrap();
+    assert_eq!(schedule.amount, 15000);
+    assert_eq!(schedule.next_due, 4000);
+    assert_eq!(schedule.interval, 172800);
+}
+
+#[test]
+fn test_cancel_remittance_schedule() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 1000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    let schedule_id = client.create_remittance_schedule(&owner, &10000, &3000, &86400);
+    client.cancel_remittance_schedule(&owner, &schedule_id);
+
+    let schedule = client.get_remittance_schedule(&schedule_id).unwrap();
+    assert!(!schedule.active);
+}
+
+#[test]
+fn test_get_remittance_schedules() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 1000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    client.create_remittance_schedule(&owner, &10000, &3000, &86400);
+    client.create_remittance_schedule(&owner, &5000, &4000, &172800);
+
+    let schedules = client.get_remittance_schedules(&owner);
+    assert_eq!(schedules.len(), 2);
+}
+
+#[test]
+fn test_remittance_schedule_validation() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 5000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    let result = client.try_create_remittance_schedule(&owner, &10000, &3000, &86400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_remittance_schedule_zero_amount() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, RemittanceSplit);
+    let client = RemittanceSplitClient::new(&env, &contract_id);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+    env.mock_all_auths();
+    set_time(&env, 1000);
+
+    client.initialize_split(&owner, &0, &50, &30, &15, &5);
+
+    let result = client.try_create_remittance_schedule(&owner, &0, &3000, &86400);
+    assert!(result.is_err());
 }

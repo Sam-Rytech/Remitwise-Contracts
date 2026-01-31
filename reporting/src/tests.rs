@@ -74,7 +74,9 @@ mod savings_goals {
 
 mod bill_payments {
     use crate::{Bill, BillPaymentsTrait};
-    use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Env, String as SorobanString, Vec};
+    use soroban_sdk::{
+        contract, contractimpl, testutils::Address as _, Address, Env, String as SorobanString, Vec,
+    };
 
     #[contract]
     pub struct BillPayments;
@@ -489,12 +491,8 @@ fn test_get_financial_health_report() {
     let period_start = 1704067200u64;
     let period_end = 1706745600u64;
 
-    let report = client.get_financial_health_report(
-        &user,
-        &total_remittance,
-        &period_start,
-        &period_end,
-    );
+    let report =
+        client.get_financial_health_report(&user, &total_remittance, &period_start, &period_end);
 
     assert_eq!(report.health_score.score, 87);
     assert_eq!(report.remittance_summary.total_received, 10000);
@@ -568,12 +566,8 @@ fn test_store_and_retrieve_report() {
     let period_start = 1704067200u64;
     let period_end = 1706745600u64;
 
-    let report = client.get_financial_health_report(
-        &user,
-        &total_remittance,
-        &period_start,
-        &period_end,
-    );
+    let report =
+        client.get_financial_health_report(&user, &total_remittance, &period_start, &period_end);
 
     let period_key = 202401u64; // January 2024
 
@@ -583,7 +577,10 @@ fn test_store_and_retrieve_report() {
     let retrieved = client.get_stored_report(&user, &period_key);
     assert!(retrieved.is_some());
     let retrieved_report = retrieved.unwrap();
-    assert_eq!(retrieved_report.health_score.score, report.health_score.score);
+    assert_eq!(
+        retrieved_report.health_score.score,
+        report.health_score.score
+    );
     assert_eq!(
         retrieved_report.remittance_summary.total_received,
         report.remittance_summary.total_received
@@ -686,12 +683,8 @@ fn test_archive_old_reports() {
     let period_start = 1704067200u64;
     let period_end = 1706745600u64;
 
-    let report = client.get_financial_health_report(
-        &user,
-        &total_remittance,
-        &period_start,
-        &period_end,
-    );
+    let report =
+        client.get_financial_health_report(&user, &total_remittance, &period_start, &period_end);
 
     let period_key = 202401u64;
     client.store_report(&user, &report, &period_key);
@@ -751,12 +744,7 @@ fn test_cleanup_old_reports() {
     );
 
     // Generate and store a report
-    let report = client.get_financial_health_report(
-        &user,
-        &10000,
-        &1704067200,
-        &1706745600,
-    );
+    let report = client.get_financial_health_report(&user, &10000, &1704067200, &1706745600);
     client.store_report(&user, &report, &202401);
 
     // Archive the report
@@ -802,12 +790,7 @@ fn test_storage_stats() {
     assert_eq!(stats.archived_reports, 0);
 
     // Store a report
-    let report = client.get_financial_health_report(
-        &user,
-        &10000,
-        &1704067200,
-        &1706745600,
-    );
+    let report = client.get_financial_health_report(&user, &10000, &1704067200, &1706745600);
     client.store_report(&user, &report, &202401);
 
     // Archive and check stats

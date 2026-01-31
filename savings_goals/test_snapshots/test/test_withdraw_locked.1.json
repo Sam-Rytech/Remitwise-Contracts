@@ -315,6 +315,12 @@
                                     "val": {
                                       "u64": 2000000000
                                     }
+                                  },
+                                  {
+                                    "key": {
+                                      "symbol": "unlock_date"
+                                    },
+                                    "val": "void"
                                   }
                                 ]
                               }
@@ -733,7 +739,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Cannot withdraw from a locked goal' from contract function 'Symbol(obj#103)'"
+                  "string": "caught panic 'Cannot withdraw from a locked goal' from contract function 'Symbol(obj#109)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

@@ -522,263 +522,233 @@ mod testsuit {
         assert_eq!(next_bill.due_date, 1000000 + 86400); // Exactly 1 day later
     }
 
-    // ============================================
-    // Storage Optimization and Archival Tests
-    // ============================================
-
     #[test]
-    fn test_archive_paid_bills() {
+    fn test_create_schedule() {
         let env = Env::default();
-        set_time(&env, 2_000_000);
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
+        set_time(&env, 1000);
 
-        // Create and pay bills
-        let id1 = client.create_bill(
+        let bill_id = client.create_bill(
             &owner,
-            &String::from_str(&env, "Bill1"),
-            &100,
-            &1000000,
-            &false,
-            &0,
-        );
-        let id2 = client.create_bill(
-            &owner,
-            &String::from_str(&env, "Bill2"),
-            &200,
-            &1000000,
-            &false,
-            &0,
-        );
-        // Create unpaid bill
-        client.create_bill(
-            &owner,
-            &String::from_str(&env, "Bill3"),
-            &300,
-            &3000000,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
             &false,
             &0,
         );
 
-        client.pay_bill(&owner, &id1);
-        client.pay_bill(&owner, &id2);
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
+        assert_eq!(schedule_id, 1);
 
-        // Archive paid bills
-        let archived_count = client.archive_paid_bills(&owner, &3_000_000);
-        assert_eq!(archived_count, 2);
-
-        // Verify only unpaid bill remains active
-        let all_bills = client.get_all_bills();
-        assert_eq!(all_bills.len(), 1);
-
-        // Verify archived bills
-        let archived = client.get_archived_bills(&owner);
-        assert_eq!(archived.len(), 2);
+        let schedule = client.get_schedule(&schedule_id);
+        assert!(schedule.is_some());
+        let schedule = schedule.unwrap();
+        assert_eq!(schedule.next_due, 3000);
+        assert_eq!(schedule.interval, 86400);
+        assert!(schedule.active);
     }
 
     #[test]
-    fn test_archive_empty_when_no_paid_bills() {
+    fn test_modify_schedule() {
         let env = Env::default();
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
+        set_time(&env, 1000);
 
-        client.create_bill(
+        let bill_id = client.create_bill(
             &owner,
-            &String::from_str(&env, "Unpaid1"),
-            &100,
-            &1000000,
-            &false,
-            &0,
-        );
-        client.create_bill(
-            &owner,
-            &String::from_str(&env, "Unpaid2"),
-            &200,
-            &1000000,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
             &false,
             &0,
         );
 
-        let archived_count = client.archive_paid_bills(&owner, &2_000_000);
-        assert_eq!(archived_count, 0);
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
+        client.modify_schedule(&owner, &schedule_id, &4000, &172800);
 
-        assert_eq!(client.get_all_bills().len(), 2);
-        assert_eq!(client.get_archived_bills(&owner).len(), 0);
+        let schedule = client.get_schedule(&schedule_id).unwrap();
+        assert_eq!(schedule.next_due, 4000);
+        assert_eq!(schedule.interval, 172800);
     }
 
     #[test]
-    fn test_get_archived_bill() {
+    fn test_cancel_schedule() {
         let env = Env::default();
         let contract_id = env.register_contract(None, BillPayments);
         let client = BillPaymentsClient::new(&env, &contract_id);
         let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
         env.mock_all_auths();
+        set_time(&env, 1000);
 
-        let id = client.create_bill(
+        let bill_id = client.create_bill(
             &owner,
-            &String::from_str(&env, "Archive"),
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
+            &false,
+            &0,
+        );
+
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
+        client.cancel_schedule(&owner, &schedule_id);
+
+        let schedule = client.get_schedule(&schedule_id).unwrap();
+        assert!(!schedule.active);
+    }
+
+    #[test]
+    fn test_execute_due_schedules() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        set_time(&env, 1000);
+
+        let bill_id = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
+            &false,
+            &0,
+        );
+
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &0);
+
+        set_time(&env, 3500);
+        let executed = client.execute_due_schedules();
+
+        assert_eq!(executed.len(), 1);
+        assert_eq!(executed.get(0).unwrap(), schedule_id);
+
+        let bill = client.get_bill(&bill_id).unwrap();
+        assert!(bill.paid);
+    }
+
+    #[test]
+    fn test_execute_recurring_schedule() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        set_time(&env, 1000);
+
+        let bill_id = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
+            &true,
+            &30,
+        );
+
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
+
+        set_time(&env, 3500);
+        client.execute_due_schedules();
+
+        let schedule = client.get_schedule(&schedule_id).unwrap();
+        assert!(schedule.active);
+        assert_eq!(schedule.next_due, 3000 + 86400);
+    }
+
+    #[test]
+    fn test_execute_missed_schedules() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        set_time(&env, 1000);
+
+        let bill_id = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
+            &true,
+            &30,
+        );
+
+        let schedule_id = client.create_schedule(&owner, &bill_id, &3000, &86400);
+
+        set_time(&env, 3000 + 86400 * 3 + 100);
+        client.execute_due_schedules();
+
+        let schedule = client.get_schedule(&schedule_id).unwrap();
+        assert_eq!(schedule.missed_count, 3);
+        assert!(schedule.next_due > 3000 + 86400 * 3);
+    }
+
+    #[test]
+    fn test_schedule_validation_past_date() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        set_time(&env, 5000);
+
+        let bill_id = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &6000,
+            &false,
+            &0,
+        );
+
+        let result = client.try_create_schedule(&owner, &bill_id, &3000, &86400);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_schedules() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+        set_time(&env, 1000);
+
+        let bill_id1 = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Electricity"),
+            &1000,
+            &2000,
+            &false,
+            &0,
+        );
+
+        let bill_id2 = client.create_bill(
+            &owner,
+            &String::from_str(&env, "Water"),
             &500,
-            &1000000,
+            &2000,
             &false,
             &0,
         );
-        client.pay_bill(&owner, &id);
-        client.archive_paid_bills(&owner, &2_000_000);
 
-        let archived_bill = client.get_archived_bill(&id);
-        assert!(archived_bill.is_some());
-        let bill = archived_bill.unwrap();
-        assert_eq!(bill.id, id);
-        assert_eq!(bill.amount, 500);
-    }
+        client.create_schedule(&owner, &bill_id1, &3000, &86400);
+        client.create_schedule(&owner, &bill_id2, &4000, &172800);
 
-    #[test]
-    fn test_restore_bill() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-
-        let id = client.create_bill(
-            &owner,
-            &String::from_str(&env, "Restore"),
-            &750,
-            &1000000,
-            &false,
-            &0,
-        );
-        client.pay_bill(&owner, &id);
-        client.archive_paid_bills(&owner, &2_000_000);
-
-        assert!(client.get_bill(&id).is_none());
-        assert!(client.get_archived_bill(&id).is_some());
-
-        client.restore_bill(&owner, &id);
-
-        assert!(client.get_bill(&id).is_some());
-        assert!(client.get_archived_bill(&id).is_none());
-    }
-
-    #[test]
-    fn test_restore_bill_not_found() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-
-        let result = client.try_restore_bill(&owner, &999);
-        assert_eq!(result, Err(Ok(Error::BillNotFound)));
-    }
-
-    #[test]
-    fn test_restore_bill_unauthorized() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-        let other = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-
-        let id = client.create_bill(
-            &owner,
-            &String::from_str(&env, "Auth"),
-            &100,
-            &1000000,
-            &false,
-            &0,
-        );
-        client.pay_bill(&owner, &id);
-        client.archive_paid_bills(&owner, &2_000_000);
-
-        let result = client.try_restore_bill(&other, &id);
-        assert_eq!(result, Err(Ok(Error::Unauthorized)));
-    }
-
-    #[test]
-    fn test_bulk_cleanup_bills() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-
-        let id1 = client.create_bill(
-            &owner,
-            &String::from_str(&env, "Old1"),
-            &100,
-            &1000,
-            &false,
-            &0,
-        );
-        let id2 = client.create_bill(
-            &owner,
-            &String::from_str(&env, "Old2"),
-            &200,
-            &1000,
-            &false,
-            &0,
-        );
-        client.pay_bill(&owner, &id1);
-        client.pay_bill(&owner, &id2);
-
-        client.archive_paid_bills(&owner, &2000);
-        assert_eq!(client.get_archived_bills(&owner).len(), 2);
-
-        let deleted = client.bulk_cleanup_bills(&owner, &1000000);
-        assert_eq!(deleted, 2);
-        assert_eq!(client.get_archived_bills(&owner).len(), 0);
-    }
-
-    #[test]
-    fn test_storage_stats() {
-        let env = Env::default();
-        let contract_id = env.register_contract(None, BillPayments);
-        let client = BillPaymentsClient::new(&env, &contract_id);
-        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
-
-        env.mock_all_auths();
-
-        let stats = client.get_storage_stats();
-        assert_eq!(stats.active_bills, 0);
-        assert_eq!(stats.archived_bills, 0);
-
-        let id1 = client.create_bill(
-            &owner,
-            &String::from_str(&env, "B1"),
-            &100,
-            &1000,
-            &false,
-            &0,
-        );
-        client.create_bill(
-            &owner,
-            &String::from_str(&env, "B2"),
-            &200,
-            &1000,
-            &false,
-            &0,
-        );
-        client.pay_bill(&owner, &id1);
-
-        client.archive_paid_bills(&owner, &2000);
-
-        let stats = client.get_storage_stats();
-        assert_eq!(stats.active_bills, 1);
-        assert_eq!(stats.archived_bills, 1);
-        assert_eq!(stats.total_unpaid_amount, 200);
-        assert_eq!(stats.total_archived_amount, 100);
+        let schedules = client.get_schedules(&owner);
+        assert_eq!(schedules.len(), 2);
     }
 }

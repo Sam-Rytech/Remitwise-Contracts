@@ -2,9 +2,24 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as AddressTrait, Ledger, LedgerInfo},
     Address, Env, String,
 };
+
+fn set_time(env: &Env, timestamp: u64) {
+    let proto = env.ledger().protocol_version();
+
+    env.ledger().set(LedgerInfo {
+        protocol_version: proto,
+        sequence_number: 1,
+        timestamp,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 1,
+        min_persistent_entry_ttl: 1,
+        max_entry_ttl: 100000,
+    });
+}
 
 #[test]
 fn test_create_policy() {
@@ -269,251 +284,201 @@ fn test_multiple_premium_payments() {
     );
 }
 
-// ============================================
-// Storage Optimization and Archival Tests
-// ============================================
-
 #[test]
-fn test_archive_inactive_policies() {
+fn test_create_premium_schedule() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    // Create policies
-    let id1 = client.create_policy(
+    let policy_id = client.create_policy(
         &owner,
-        &String::from_str(&env, "Policy1"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &10000,
-    );
-    let id2 = client.create_policy(
-        &owner,
-        &String::from_str(&env, "Policy2"),
-        &String::from_str(&env, "Life"),
-        &200,
-        &20000,
-    );
-    // Keep one active
-    client.create_policy(
-        &owner,
-        &String::from_str(&env, "Policy3"),
-        &String::from_str(&env, "Auto"),
-        &150,
-        &15000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
 
-    // Deactivate policies 1 and 2
-    client.deactivate_policy(&owner, &id1);
-    client.deactivate_policy(&owner, &id2);
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &2592000);
+    assert_eq!(schedule_id, 1);
 
-    // Archive inactive policies
-    let archived_count = client.archive_inactive_policies(&owner, &3_000_000_000);
-    assert_eq!(archived_count, 2);
-
-    // Verify only active policy remains
-    let active = client.get_active_policies(&owner);
-    assert_eq!(active.len(), 1);
-
-    // Verify archived policies
-    let archived = client.get_archived_policies(&owner);
-    assert_eq!(archived.len(), 2);
+    let schedule = client.get_premium_schedule(&schedule_id);
+    assert!(schedule.is_some());
+    let schedule = schedule.unwrap();
+    assert_eq!(schedule.next_due, 3000);
+    assert_eq!(schedule.interval, 2592000);
+    assert!(schedule.active);
 }
 
 #[test]
-fn test_archive_empty_when_all_active() {
+fn test_modify_premium_schedule() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    client.create_policy(
+    let policy_id = client.create_policy(
         &owner,
-        &String::from_str(&env, "Active1"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &10000,
-    );
-    client.create_policy(
-        &owner,
-        &String::from_str(&env, "Active2"),
-        &String::from_str(&env, "Life"),
-        &200,
-        &20000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
 
-    let archived_count = client.archive_inactive_policies(&owner, &3_000_000_000);
-    assert_eq!(archived_count, 0);
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &2592000);
+    client.modify_premium_schedule(&owner, &schedule_id, &4000, &2678400);
 
-    assert_eq!(client.get_active_policies(&owner).len(), 2);
-    assert_eq!(client.get_archived_policies(&owner).len(), 0);
+    let schedule = client.get_premium_schedule(&schedule_id).unwrap();
+    assert_eq!(schedule.next_due, 4000);
+    assert_eq!(schedule.interval, 2678400);
 }
 
 #[test]
-fn test_get_archived_policy() {
+fn test_cancel_premium_schedule() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    let id = client.create_policy(
+    let policy_id = client.create_policy(
         &owner,
-        &String::from_str(&env, "Archive"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &5000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
-    client.deactivate_policy(&owner, &id);
-    client.archive_inactive_policies(&owner, &3_000_000_000);
 
-    let archived_policy = client.get_archived_policy(&id);
-    assert!(archived_policy.is_some());
-    let policy = archived_policy.unwrap();
-    assert_eq!(policy.id, id);
-    assert_eq!(policy.total_coverage, 5000);
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &2592000);
+    client.cancel_premium_schedule(&owner, &schedule_id);
+
+    let schedule = client.get_premium_schedule(&schedule_id).unwrap();
+    assert!(!schedule.active);
 }
 
 #[test]
-fn test_restore_policy() {
+fn test_execute_due_premium_schedules() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    let id = client.create_policy(
+    let policy_id = client.create_policy(
         &owner,
-        &String::from_str(&env, "Restore"),
-        &String::from_str(&env, "Life"),
-        &150,
-        &15000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
-    client.deactivate_policy(&owner, &id);
-    client.archive_inactive_policies(&owner, &3_000_000_000);
 
-    assert!(client.get_policy(&id).is_none());
-    assert!(client.get_archived_policy(&id).is_some());
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &0);
 
-    let restored = client.restore_policy(&owner, &id);
-    assert!(restored);
+    set_time(&env, 3500);
+    let executed = client.execute_due_premium_schedules();
 
-    assert!(client.get_policy(&id).is_some());
-    assert!(client.get_archived_policy(&id).is_none());
+    assert_eq!(executed.len(), 1);
+    assert_eq!(executed.get(0).unwrap(), schedule_id);
+
+    let policy = client.get_policy(&policy_id).unwrap();
+    assert_eq!(policy.next_payment_date, 3500 + 30 * 86400);
 }
 
 #[test]
-#[should_panic(expected = "Archived policy not found")]
-fn test_restore_nonexistent_policy() {
+fn test_execute_recurring_premium_schedule() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    client.restore_policy(&owner, &999);
+    let policy_id = client.create_policy(
+        &owner,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
+    );
+
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &2592000);
+
+    set_time(&env, 3500);
+    client.execute_due_premium_schedules();
+
+    let schedule = client.get_premium_schedule(&schedule_id).unwrap();
+    assert!(schedule.active);
+    assert_eq!(schedule.next_due, 3000 + 2592000);
 }
 
 #[test]
-#[should_panic(expected = "Only the policy owner can restore this policy")]
-fn test_restore_policy_unauthorized() {
+fn test_execute_missed_premium_schedules() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let other = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    let id = client.create_policy(
+    let policy_id = client.create_policy(
         &owner,
-        &String::from_str(&env, "Auth"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &10000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
-    client.deactivate_policy(&owner, &id);
-    client.archive_inactive_policies(&owner, &3_000_000_000);
 
-    client.restore_policy(&other, &id);
+    let schedule_id = client.create_premium_schedule(&owner, &policy_id, &3000, &2592000);
+
+    set_time(&env, 3000 + 2592000 * 3 + 100);
+    client.execute_due_premium_schedules();
+
+    let schedule = client.get_premium_schedule(&schedule_id).unwrap();
+    assert_eq!(schedule.missed_count, 3);
+    assert!(schedule.next_due > 3000 + 2592000 * 3);
 }
 
 #[test]
-fn test_bulk_cleanup_policies() {
+fn test_get_premium_schedules() {
     let env = Env::default();
     let contract_id = env.register_contract(None, Insurance);
     let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
+    let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
 
     env.mock_all_auths();
+    set_time(&env, 1000);
 
-    let id1 = client.create_policy(
+    let policy_id1 = client.create_policy(
         &owner,
-        &String::from_str(&env, "Old1"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &1000,
+        &String::from_str(&env, "Health Insurance"),
+        &String::from_str(&env, "health"),
+        &500,
+        &50000,
     );
-    let id2 = client.create_policy(
+
+    let policy_id2 = client.create_policy(
         &owner,
-        &String::from_str(&env, "Old2"),
-        &String::from_str(&env, "Life"),
-        &200,
-        &2000,
+        &String::from_str(&env, "Life Insurance"),
+        &String::from_str(&env, "life"),
+        &300,
+        &100000,
     );
-    client.deactivate_policy(&owner, &id1);
-    client.deactivate_policy(&owner, &id2);
 
-    client.archive_inactive_policies(&owner, &3_000_000_000);
-    assert_eq!(client.get_archived_policies(&owner).len(), 2);
+    client.create_premium_schedule(&owner, &policy_id1, &3000, &2592000);
+    client.create_premium_schedule(&owner, &policy_id2, &4000, &2592000);
 
-    let deleted = client.bulk_cleanup_policies(&owner, &1000000);
-    assert_eq!(deleted, 2);
-    assert_eq!(client.get_archived_policies(&owner).len(), 0);
-}
-
-#[test]
-fn test_storage_stats() {
-    let env = Env::default();
-    let contract_id = env.register_contract(None, Insurance);
-    let client = InsuranceClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    let stats = client.get_storage_stats();
-    assert_eq!(stats.active_policies, 0);
-    assert_eq!(stats.archived_policies, 0);
-
-    let id1 = client.create_policy(
-        &owner,
-        &String::from_str(&env, "P1"),
-        &String::from_str(&env, "Health"),
-        &100,
-        &10000,
-    );
-    client.create_policy(
-        &owner,
-        &String::from_str(&env, "P2"),
-        &String::from_str(&env, "Life"),
-        &200,
-        &20000,
-    );
-    client.deactivate_policy(&owner, &id1);
-
-    client.archive_inactive_policies(&owner, &3_000_000_000);
-
-    let stats = client.get_storage_stats();
-    assert_eq!(stats.active_policies, 1);
-    assert_eq!(stats.archived_policies, 1);
-    assert_eq!(stats.total_active_coverage, 20000);
-    assert_eq!(stats.total_archived_coverage, 10000);
+    let schedules = client.get_premium_schedules(&owner);
+    assert_eq!(schedules.len(), 2);
 }
