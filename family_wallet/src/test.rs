@@ -989,6 +989,46 @@ fn test_check_spending_limit_negative_amount_returns_false() {
     let client = FamilyWalletClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let member = Address::generate(&env);
+    let non_member = Address::generate(&env);
+    let initial_members = vec![&env, member.clone()];
+
+    // Initialize wallet
+    client.init(&owner, &initial_members);
+
+    // Add admin
+    client.add_family_member(&owner, &admin, &FamilyRole::Admin);
+
+    // Configure spending limit to 1000 tokens
+    let signers = vec![&env, owner.clone(), admin.clone()];
+    client.configure_multisig(
+        &owner,
+        &TransactionType::LargeWithdrawal,
+        &2,
+        &signers,
+        &1000_0000000, // 1000 tokens with 7 decimals
+    );
+
+    // Test 1: Owner can spend any amount
+    assert!(client.check_spending_limit(&owner, &5000_0000000)); // 5000 tokens
+    assert!(client.check_spending_limit(&owner, &100000_0000000)); // 100000 tokens
+
+    // Test 2: Admin can spend any amount
+    assert!(client.check_spending_limit(&admin, &5000_0000000));
+    assert!(client.check_spending_limit(&admin, &100000_0000000));
+
+    // Test 3: Member can spend within limit
+    assert!(client.check_spending_limit(&member, &500_0000000)); // 500 tokens - within limit
+    assert!(client.check_spending_limit(&member, &1000_0000000)); // 1000 tokens - at limit
+
+    // Test 4: Member cannot spend above limit
+    assert!(!client.check_spending_limit(&member, &1001_0000000)); // 1001 tokens - exceeds limit
+    assert!(!client.check_spending_limit(&member, &5000_0000000)); // 5000 tokens - exceeds limit
+
+    // Test 5: Non-member cannot spend
+    assert!(!client.check_spending_limit(&non_member, &1_0000000)); // Even 1 token
+    assert!(!client.check_spending_limit(&non_member, &1000_0000000));
     client.init(&owner, &vec![&env]);
 
     let eve = Address::generate(&env);

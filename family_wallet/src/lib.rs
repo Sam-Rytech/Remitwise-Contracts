@@ -1009,6 +1009,56 @@ impl FamilyWallet {
             Some(ts)
         }
     }
+    /// Check if a caller has permission to spend a given amount
+    ///
+    /// This function validates spending limits for orchestrator integration.
+    /// It checks the caller's role and compares the amount against the configured
+    /// spending limit for large withdrawals.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - Address requesting permission to spend
+    /// * `amount` - Amount to validate
+    ///
+    /// # Returns
+    /// true if the caller can spend the amount, false otherwise
+    ///
+    /// # Logic
+    /// - Owner and Admin: Can spend any amount
+    /// - Members: Can spend up to the configured spending limit
+    /// - Non-members: Cannot spend (returns false)
+    pub fn check_spending_limit(env: Env, caller: Address, amount: i128) -> bool {
+        // Get members map
+        let members: Map<Address, FamilyMember> =
+            match env.storage().instance().get(&symbol_short!("MEMBERS")) {
+                Some(m) => m,
+                None => return false, // Wallet not initialized
+            };
+
+        // Check if caller is a member
+        let member = match members.get(caller.clone()) {
+            Some(m) => m,
+            None => return false, // Not a family member
+        };
+
+        // Owner and Admin have unlimited spending
+        if member.role == FamilyRole::Owner || member.role == FamilyRole::Admin {
+            return true;
+        }
+
+        // For regular members, check against spending limit
+        let config: MultiSigConfig = match env
+            .storage()
+            .instance()
+            .get(&Self::get_config_key(TransactionType::LargeWithdrawal))
+        {
+            Some(c) => c,
+            None => return false, // Config not found
+        };
+
+        // Return true if amount is within spending limit
+        amount <= config.spending_limit
+    }
 
     /// Archive old executed transactions before the specified timestamp.
     ///

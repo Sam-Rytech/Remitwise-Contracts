@@ -86,10 +86,13 @@ Gets all unpaid bills for an owner.
 
 **Returns:** Vector of unpaid Bill structs
 
-#### `get_overdue_bills(env) -> Vec<Bill>`
-Gets all overdue unpaid bills across all owners.
+#### `get_overdue_bills(env, owner) -> Vec<Bill>`
+Gets all overdue unpaid bills for a specific owner.
 
-**Returns:** Vector of overdue Bill structs
+**Parameters:**
+- `owner`: Address of the bill owner
+
+**Returns:** Vector of overdue Bill structs belonging to the owner
 
 #### `get_total_unpaid(env, owner) -> i128`
 Calculates total amount of unpaid bills for an owner.
@@ -159,7 +162,7 @@ let unpaid = bill_payments::get_unpaid_bills(env, user_address);
 let total = bill_payments::get_total_unpaid(env, user_address);
 
 // Check for overdue bills
-let overdue = bill_payments::get_overdue_bills(env);
+let overdue = bill_payments::get_overdue_bills(env, user_address);
 ```
 
 ## Events

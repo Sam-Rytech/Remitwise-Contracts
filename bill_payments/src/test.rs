@@ -313,7 +313,7 @@ mod testsuit {
             &0,
         );
 
-        let overdue = client.get_overdue_bills();
+        let overdue = client.get_overdue_bills(&owner);
         assert_eq!(overdue.len(), 2); // Only first two are overdue
     }
 
@@ -536,14 +536,14 @@ mod testsuit {
         );
 
         // Verify it shows up in overdue
-        let overdue = client.get_overdue_bills();
+        let overdue = client.get_overdue_bills(&owner);
         assert_eq!(overdue.len(), 1);
 
         // Pay it
         client.pay_bill(&owner, &bill_id);
 
         // Verify it's no longer overdue (because it's paid)
-        let overdue_after = client.get_overdue_bills();
+        let overdue_after = client.get_overdue_bills(&owner);
         assert_eq!(overdue_after.len(), 0);
     }
 
@@ -1094,5 +1094,69 @@ mod testsuit {
         assert_eq!(data, (bill_id, owner.clone(), 1000i128));
 
         assert_eq!(last_event.0, contract_id.clone());
+    }
+
+    #[test]
+    fn test_get_overdue_bills_owner_scoped() {
+        let env = Env::default();
+        set_time(&env, 2_000_000);
+
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let alice = <soroban_sdk::Address as AddressTrait>::generate(&env);
+        let bob = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+
+        // Alice has 2 overdue bills
+        client.create_bill(
+            &alice,
+            &String::from_str(&env, "Alice Overdue1"),
+            &100,
+            &1_000_000,
+            &false,
+            &0,
+        );
+        client.create_bill(
+            &alice,
+            &String::from_str(&env, "Alice Overdue2"),
+            &200,
+            &1_500_000,
+            &false,
+            &0,
+        );
+
+        // Bob has 1 overdue bill
+        client.create_bill(
+            &bob,
+            &String::from_str(&env, "Bob Overdue"),
+            &300,
+            &1_000_000,
+            &false,
+            &0,
+        );
+
+        // Alice has 1 future bill (not overdue)
+        client.create_bill(
+            &alice,
+            &String::from_str(&env, "Alice Future"),
+            &400,
+            &3_000_000,
+            &false,
+            &0,
+        );
+
+        let alice_overdue = client.get_overdue_bills(&alice);
+        let bob_overdue = client.get_overdue_bills(&bob);
+
+        // Alice sees only her 2 overdue bills, not Bob's
+        assert_eq!(alice_overdue.len(), 2);
+        for bill in alice_overdue.iter() {
+            assert_eq!(bill.owner, alice);
+        }
+
+        // Bob sees only his 1 overdue bill, not Alice's
+        assert_eq!(bob_overdue.len(), 1);
+        assert_eq!(bob_overdue.get(0).unwrap().owner, bob);
     }
 }

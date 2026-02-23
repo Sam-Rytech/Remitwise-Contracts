@@ -484,7 +484,7 @@ impl BillPayments {
         result
     }
 
-    pub fn get_overdue_bills(env: Env) -> Vec<Bill> {
+    pub fn get_overdue_bills(env: Env, owner: Address) -> Vec<Bill> {
         let current_time = env.ledger().timestamp();
         let bills: Map<u32, Bill> = env
             .storage()
@@ -493,7 +493,7 @@ impl BillPayments {
             .unwrap_or_else(|| Map::new(&env));
         let mut result = Vec::new(&env);
         for (_, bill) in bills.iter() {
-            if !bill.paid && bill.due_date < current_time {
+            if !bill.paid && bill.due_date < current_time && bill.owner == owner {
                 result.push_back(bill);
             }
         }
