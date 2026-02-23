@@ -30,7 +30,7 @@ fn test_notification_flow() {
 
     // VERIFY: Get Events
     let all_events = e.events().all();
-    assert!(all_events.len() > 0, "No events were emitted!");
+    assert!(!all_events.is_empty(), "No events were emitted!");
 
     let last_event = all_events.last().unwrap();
     let topics = &last_event.1;
