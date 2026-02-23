@@ -760,4 +760,175 @@ mod testsuit {
         assert_eq!(schedules.len(), 2);
     }
     */
+
+    #[test]
+    fn test_get_unpaid_bills_many_items() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+
+        // Create 15 unpaid bills for the owner (chosen count > 10 for meaningful testing)
+        let bill_names = [
+            "Bill 0", "Bill 1", "Bill 2", "Bill 3", "Bill 4",
+            "Bill 5", "Bill 6", "Bill 7", "Bill 8", "Bill 9",
+            "Bill 10", "Bill 11", "Bill 12", "Bill 13", "Bill 14"
+        ];
+        
+        let mut created_bill_ids = Vec::new(&env);
+        let mut expected_total = 0i128;
+        
+        for i in 0..15 {
+            let amount = 1000 + (i as i128 * 100);
+            expected_total += amount;
+            
+            let bill_id = client.create_bill(
+                &owner,
+                &String::from_str(&env, bill_names[i]),
+                &amount,
+                &(1000000 + (i as u64 * 10000)), // Different due dates
+                &false, // Not recurring
+                &0,
+            );
+            created_bill_ids.push_back(bill_id);
+        }
+
+        // Test get_unpaid_bills returns correct count
+        let unpaid_bills = client.get_unpaid_bills(&owner);
+        assert_eq!(unpaid_bills.len(), 15, "Should return exactly 15 unpaid bills");
+
+        // Verify all returned bills belong to the owner and are unpaid
+        for i in 0..unpaid_bills.len() {
+            let bill = unpaid_bills.get(i).unwrap();
+            assert_eq!(bill.owner, owner, "All bills should belong to the owner");
+            assert!(!bill.paid, "All bills should be unpaid");
+        }
+
+        // Verify all bill IDs are distinct and in expected range (1..=15)
+        let mut found_ids = Vec::new(&env);
+        for i in 0..unpaid_bills.len() {
+            let bill = unpaid_bills.get(i).unwrap();
+            found_ids.push_back(bill.id);
+            assert!(bill.id >= 1 && bill.id <= 15, "Bill ID should be in range 1..=15");
+        }
+
+        // Verify no duplicate IDs
+        for i in 0..found_ids.len() {
+            for j in (i + 1)..found_ids.len() {
+                assert_ne!(
+                    found_ids.get(i).unwrap(),
+                    found_ids.get(j).unwrap(),
+                    "Bill IDs should be unique"
+                );
+            }
+        }
+
+        // Test get_total_unpaid matches sum of all bill amounts
+        let total_unpaid = client.get_total_unpaid(&owner);
+        assert_eq!(total_unpaid, expected_total, "Total unpaid should match sum of all bill amounts");
+
+        // Test isolation: create bills for different owner
+        let other_owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+        client.create_bill(
+            &other_owner,
+            &String::from_str(&env, "Other Owner Bill"),
+            &5000,
+            &2000000,
+            &false,
+            &0,
+        );
+
+        // Verify first owner's bills are not affected
+        let owner_unpaid_after = client.get_unpaid_bills(&owner);
+        assert_eq!(owner_unpaid_after.len(), 15, "Owner's unpaid bills should remain unchanged");
+
+        // Verify other owner's bills are separate
+        let other_unpaid = client.get_unpaid_bills(&other_owner);
+        assert_eq!(other_unpaid.len(), 1, "Other owner should have exactly 1 unpaid bill");
+    }
+
+    #[test]
+    fn test_pay_bills_and_verify_decreased_counts() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, BillPayments);
+        let client = BillPaymentsClient::new(&env, &contract_id);
+        let owner = <soroban_sdk::Address as AddressTrait>::generate(&env);
+
+        env.mock_all_auths();
+
+        // Create 12 unpaid bills for the owner
+        let bill_names = [
+            "Bill 0", "Bill 1", "Bill 2", "Bill 3", "Bill 4",
+            "Bill 5", "Bill 6", "Bill 7", "Bill 8", "Bill 9",
+            "Bill 10", "Bill 11"
+        ];
+        
+        let mut bill_ids = Vec::new(&env);
+        let mut expected_total = 0i128;
+        
+        for i in 0..12 {
+            let amount = 1000 + (i as i128 * 100);
+            expected_total += amount;
+            
+            let bill_id = client.create_bill(
+                &owner,
+                &String::from_str(&env, bill_names[i]),
+                &amount,
+                &(1000000 + (i as u64 * 10000)),
+                &false,
+                &0,
+            );
+            bill_ids.push_back(bill_id);
+        }
+
+        // Verify initial state
+        let initial_unpaid = client.get_unpaid_bills(&owner);
+        let initial_total = client.get_total_unpaid(&owner);
+        assert_eq!(initial_unpaid.len(), 12);
+        assert_eq!(initial_total, expected_total);
+
+        // Pay first 3 bills
+        for i in 0..3 {
+            client.pay_bill(&owner, &bill_ids.get(i).unwrap());
+        }
+
+        // Verify decreased counts
+        let after_payment_unpaid = client.get_unpaid_bills(&owner);
+        let after_payment_total = client.get_total_unpaid(&owner);
+        assert_eq!(after_payment_unpaid.len(), 9, "Should have 9 unpaid bills after paying 3");
+        
+        // Calculate expected total after paying first 3 bills
+        let mut expected_remaining = expected_total;
+        for i in 0..3 {
+            expected_remaining -= 1000 + (i as i128 * 100);
+        }
+        assert_eq!(after_payment_total, expected_remaining, "Total should decrease by paid amounts");
+
+        // Verify paid bills are no longer in unpaid list
+        for i in 0..3 {
+            let bill_id = bill_ids.get(i).unwrap();
+            let bill = client.get_bill(&bill_id).unwrap();
+            assert!(bill.paid, "Paid bill should be marked as paid");
+        }
+
+        // Verify remaining bills are still unpaid
+        for i in 3..12 {
+            let bill_id = bill_ids.get(i).unwrap();
+            let bill = client.get_bill(&bill_id).unwrap();
+            assert!(!bill.paid, "Unpaid bill should remain unpaid");
+        }
+
+        // Pay all remaining bills
+        for i in 3..12 {
+            client.pay_bill(&owner, &bill_ids.get(i).unwrap());
+        }
+
+        // Verify all bills are paid
+        let final_unpaid = client.get_unpaid_bills(&owner);
+        let final_total = client.get_total_unpaid(&owner);
+        assert_eq!(final_unpaid.len(), 0, "Should have no unpaid bills");
+        assert_eq!(final_total, 0, "Total unpaid should be 0");
+    }
 }
