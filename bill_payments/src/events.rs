@@ -21,13 +21,13 @@ pub enum EventPriority {
 }
 
 impl EventCategory {
-    pub fn to_u32(&self) -> u32 {
-        *self as u32
+    pub fn to_u32(self) -> u32 {
+        self as u32
     }
 }
 impl EventPriority {
-    pub fn to_u32(&self) -> u32 {
-        *self as u32
+    pub fn to_u32(self) -> u32 {
+        self as u32
     }
 }
 

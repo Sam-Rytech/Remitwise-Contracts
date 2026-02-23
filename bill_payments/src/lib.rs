@@ -20,7 +20,7 @@ const ARCHIVE_LIFETIME_THRESHOLD: u32 = 17280;
 const ARCHIVE_BUMP_AMOUNT: u32 = 2592000;
 
 /// Bill data structure
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[contracttype]
 pub struct Bill {
     pub id: u32,
@@ -542,19 +542,6 @@ impl BillPayments {
         Ok(())
     }
 
-    pub fn get_all_bills(env: Env) -> Vec<Bill> {
-        let bills: Map<u32, Bill> = env
-            .storage()
-            .instance()
-            .get(&symbol_short!("BILLS"))
-            .unwrap_or_else(|| Map::new(&env));
-        let mut result = Vec::new(&env);
-        for (_, bill) in bills.iter() {
-            result.push_back(bill);
-        }
-        result
-    }
-
     pub fn archive_paid_bills(
         env: Env,
         caller: Address,
@@ -749,7 +736,7 @@ impl BillPayments {
     pub fn batch_pay_bills(env: Env, caller: Address, bill_ids: Vec<u32>) -> Result<u32, Error> {
         caller.require_auth();
         Self::require_not_paused(&env, pause_functions::PAY_BILL)?;
-        if bill_ids.len() as u32 > MAX_BATCH_SIZE {
+        if bill_ids.len() > (MAX_BATCH_SIZE as usize).try_into().unwrap() {
             return Err(Error::BatchTooLarge);
         }
         // Validate all up front
@@ -898,6 +885,48 @@ impl BillPayments {
         env.storage()
             .instance()
             .set(&symbol_short!("STOR_STAT"), &stats);
+    }
+
+    /// Returns only bills belonging to `owner`.
+    /// This is the ONLY production-facing bills query — callers see only their own data.
+    pub fn get_all_bills_for_owner(env: Env, owner: Address) -> Vec<Bill> {
+        owner.require_auth();
+        let bills: Map<u32, Bill> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("BILLS"))
+            .unwrap_or_else(|| Map::new(&env));
+        let mut result = Vec::new(&env);
+        for (_, bill) in bills.iter() {
+            if bill.owner == owner {
+                result.push_back(bill);
+            }
+        }
+        result
+    }
+
+    /// Returns ALL bills regardless of owner.
+    ///
+    /// ⚠️  ADMIN ONLY — restricted to the pause/upgrade admin.
+    ///     Do NOT expose this in any user-facing SDK or frontend.
+    pub fn get_all_bills(env: Env, caller: Address) -> Result<Vec<Bill>, Error> {
+        caller.require_auth();
+        // Reuse the existing pause admin as the "admin" gate —
+        // it's already established in the contract, no new storage key needed.
+        let admin = Self::get_pause_admin(&env).ok_or(Error::Unauthorized)?;
+        if admin != caller {
+            return Err(Error::Unauthorized);
+        }
+        let bills: Map<u32, Bill> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("BILLS"))
+            .unwrap_or_else(|| Map::new(&env));
+        let mut result = Vec::new(&env);
+        for (_, bill) in bills.iter() {
+            result.push_back(bill);
+        }
+        Ok(result)
     }
 }
 
