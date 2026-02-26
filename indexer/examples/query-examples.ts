@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2026 Remitwise
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 /**
  * Example queries demonstrating the indexer API
  * Run with: ts-node examples/query-examples.ts

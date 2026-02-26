@@ -83,6 +83,7 @@ pub enum Error {
 #[derive(Clone)]
 #[contracttype]
 #[derive(Clone)]
+#[contracttype]
 pub struct ArchivedBill {
     pub id: u32,
     pub owner: Address,

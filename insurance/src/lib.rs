@@ -571,6 +571,106 @@ impl Insurance {
     }
 
     // -----------------------------------------------------------------------
+    // Tag management
+    // -----------------------------------------------------------------------
+
+    fn validate_tags(tags: &Vec<String>) {
+        if tags.is_empty() {
+            panic!("Tags cannot be empty");
+        }
+        for tag in tags.iter() {
+            if tag.len() == 0 || tag.len() > 32 {
+                panic!("Tag must be between 1 and 32 characters");
+            }
+        }
+    }
+
+    pub fn add_tags_to_policy(
+        env: Env,
+        caller: Address,
+        policy_id: u32,
+        tags: Vec<String>,
+    ) {
+        caller.require_auth();
+        Self::validate_tags(&tags);
+        Self::extend_instance_ttl(&env);
+
+        let mut policies: Map<u32, InsurancePolicy> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("POLICIES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut policy = policies.get(policy_id).expect("Policy not found");
+
+        if policy.owner != caller {
+            panic!("Only the policy owner can add tags");
+        }
+
+        for tag in tags.iter() {
+            policy.tags.push_back(tag);
+        }
+
+        policies.set(policy_id, policy);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("POLICIES"), &policies);
+
+        env.events().publish(
+            (symbol_short!("insure"), symbol_short!("tags_add")),
+            (policy_id, caller, tags),
+        );
+    }
+
+    pub fn remove_tags_from_policy(
+        env: Env,
+        caller: Address,
+        policy_id: u32,
+        tags: Vec<String>,
+    ) {
+        caller.require_auth();
+        Self::validate_tags(&tags);
+        Self::extend_instance_ttl(&env);
+
+        let mut policies: Map<u32, InsurancePolicy> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("POLICIES"))
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut policy = policies.get(policy_id).expect("Policy not found");
+
+        if policy.owner != caller {
+            panic!("Only the policy owner can remove tags");
+        }
+
+        let mut new_tags = Vec::new(&env);
+        for existing_tag in policy.tags.iter() {
+            let mut should_keep = true;
+            for remove_tag in tags.iter() {
+                if existing_tag == remove_tag {
+                    should_keep = false;
+                    break;
+                }
+            }
+            if should_keep {
+                new_tags.push_back(existing_tag);
+            }
+        }
+
+        policy.tags = new_tags;
+        policies.set(policy_id, policy);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("POLICIES"), &policies);
+
+        env.events().publish(
+            (symbol_short!("insure"), symbol_short!("tags_rem")),
+            (policy_id, caller, tags),
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Core policy operations (unchanged)
     // -----------------------------------------------------------------------
 

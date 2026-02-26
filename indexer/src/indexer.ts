@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2026 Remitwise
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 import { Server, SorobanRpc } from '@stellar/stellar-sdk';
 import Database from 'better-sqlite3';
 import { EventProcessor } from './eventProcessor';
