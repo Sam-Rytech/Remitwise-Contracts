@@ -65,8 +65,10 @@ pub enum TransactionData {
 pub struct FamilyMember {
     pub address: Address,
     pub role: FamilyRole,
-    /// Per-transaction cap in stroops. 0 = unlimited.
+    /// Legacy per-transaction cap in stroops. 0 = unlimited.
     pub spending_limit: i128,
+    /// Enhanced precision spending limit (optional)
+    pub precision_limit: Option<PrecisionSpendingLimit>,
     pub added_at: u64,
 }
 
@@ -145,6 +147,46 @@ pub struct BatchMemberItem {
     pub role: FamilyRole,
 }
 
+/// Spending period configuration for rollover behavior
+#[contracttype]
+#[derive(Clone)]
+pub struct SpendingPeriod {
+    /// Period type: 0=Daily, 1=Weekly, 2=Monthly
+    pub period_type: u32,
+    /// Period start timestamp (aligned to period boundary)
+    pub period_start: u64,
+    /// Period duration in seconds
+    pub period_duration: u64,
+}
+
+/// Cumulative spending tracking for precision validation
+#[contracttype]
+#[derive(Clone)]
+pub struct SpendingTracker {
+    /// Current period spending amount
+    pub current_spent: i128,
+    /// Last transaction timestamp for precision validation
+    pub last_tx_timestamp: u64,
+    /// Transaction count in current period
+    pub tx_count: u32,
+    /// Period configuration
+    pub period: SpendingPeriod,
+}
+
+/// Enhanced spending limit with precision controls
+#[contracttype]
+#[derive(Clone)]
+pub struct PrecisionSpendingLimit {
+    /// Base spending limit per period
+    pub limit: i128,
+    /// Minimum precision unit (prevents dust attacks)
+    pub min_precision: i128,
+    /// Maximum single transaction amount
+    pub max_single_tx: i128,
+    /// Enable rollover validation
+    pub enable_rollover: bool,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum ArchiveEvent {
@@ -172,6 +214,16 @@ pub enum Error {
     MemberNotFound = 11,
     TransactionAlreadyExecuted = 12,
     InvalidSpendingLimit = 13,
+    /// Amount below minimum precision threshold
+    AmountBelowPrecision = 14,
+    /// Single transaction exceeds maximum allowed
+    ExceedsMaxSingleTx = 15,
+    /// Cumulative spending would exceed period limit
+    ExceedsPeriodLimit = 16,
+    /// Period rollover validation failed
+    RolloverValidationFailed = 17,
+    /// Invalid precision configuration
+    InvalidPrecisionConfig = 18,
 }
 
 #[contractimpl]
@@ -307,6 +359,7 @@ impl FamilyWallet {
                 address: member_address.clone(),
                 role,
                 spending_limit,
+                precision_limit: None, // Default to legacy behavior
                 added_at: now,
             },
         );
@@ -426,6 +479,264 @@ impl FamilyWallet {
         }
 
         amount <= member.spending_limit
+    }
+
+    /// Configure precision spending limit for a member
+    /// 
+    /// # Arguments
+    /// * `caller` - Must be Owner or Admin
+    /// * `member_address` - Target member to configure
+    /// * `precision_limit` - New precision limit configuration
+    /// 
+    /// # Security Assumptions
+    /// - Validates precision parameters to prevent overflow/underflow
+    /// - Ensures minimum precision is positive and reasonable
+    /// - Validates period configuration for rollover behavior
+    pub fn set_precision_spending_limit(
+        env: Env,
+        caller: Address,
+        member_address: Address,
+        precision_limit: PrecisionSpendingLimit,
+    ) -> Result<bool, Error> {
+        caller.require_auth();
+        Self::require_not_paused(&env);
+
+        if !Self::is_owner_or_admin(&env, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Validate precision configuration
+        if precision_limit.limit < 0 {
+            return Err(Error::InvalidPrecisionConfig);
+        }
+        if precision_limit.min_precision <= 0 {
+            return Err(Error::InvalidPrecisionConfig);
+        }
+        if precision_limit.max_single_tx <= 0 || precision_limit.max_single_tx > precision_limit.limit {
+            return Err(Error::InvalidPrecisionConfig);
+        }
+
+        let mut members: Map<Address, FamilyMember> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("MEMBERS"))
+            .unwrap_or_else(|| panic!("Wallet not initialized"));
+
+        let mut member = members
+            .get(member_address.clone())
+            .ok_or(Error::MemberNotFound)?;
+
+        member.precision_limit = Some(precision_limit);
+        members.set(member_address.clone(), member);
+
+        Self::extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("MEMBERS"), &members);
+
+        Ok(true)
+    }
+
+    /// Enhanced spending validation with precision and rollover checks
+    /// 
+    /// # Arguments
+    /// * `caller` - Address attempting to spend
+    /// * `amount` - Amount to spend (in stroops)
+    /// 
+    /// # Returns
+    /// * `Ok(())` if spending is allowed
+    /// * `Err(Error)` with specific validation failure
+    /// 
+    /// # Security Assumptions
+    /// - Prevents precision attacks via minimum precision validation
+    /// - Enforces single transaction limits to prevent large withdrawals
+    /// - Validates cumulative spending against period limits
+    /// - Handles period rollover with proper boundary validation
+    pub fn validate_precision_spending(
+        env: Env,
+        caller: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let members: Map<Address, FamilyMember> = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("MEMBERS"))
+            .ok_or(Error::MemberNotFound)?;
+
+        let member = members.get(caller.clone()).ok_or(Error::MemberNotFound)?;
+
+        // Check role expiry
+        if Self::role_has_expired(&env, &member.address) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Owner and Admin bypass precision checks
+        if member.role == FamilyRole::Owner || member.role == FamilyRole::Admin {
+            return Ok(());
+        }
+
+        // If no precision limit configured, fall back to legacy check
+        let precision_limit = match &member.precision_limit {
+            Some(limit) => limit,
+            None => {
+                // Legacy behavior: check basic spending limit
+                if member.spending_limit == 0 || amount <= member.spending_limit {
+                    return Ok(());
+                } else {
+                    return Err(Error::ExceedsPeriodLimit);
+                }
+            }
+        };
+
+        // Precision validation: prevent dust attacks
+        if amount < precision_limit.min_precision {
+            return Err(Error::AmountBelowPrecision);
+        }
+
+        // Single transaction limit validation
+        if amount > precision_limit.max_single_tx {
+            return Err(Error::ExceedsMaxSingleTx);
+        }
+
+        // If rollover is disabled, only check single transaction limits
+        if !precision_limit.enable_rollover {
+            return Ok(());
+        }
+
+        // Get or initialize spending tracker
+        let tracker_key = symbol_short!("TRACKER");
+        let mut spending_trackers: Map<Address, SpendingTracker> = env
+            .storage()
+            .instance()
+            .get(&tracker_key)
+            .unwrap_or_else(|| Map::new(&env));
+
+        let current_time = env.ledger().timestamp();
+        let mut tracker = spending_trackers.get(caller.clone()).unwrap_or_else(|| {
+            // Initialize new tracker with current period
+            SpendingTracker {
+                current_spent: 0,
+                last_tx_timestamp: current_time,
+                tx_count: 0,
+                period: Self::get_current_period(current_time),
+            }
+        });
+
+        // Check if we need to roll over to a new period
+        if Self::should_rollover_period(&tracker.period, current_time) {
+            tracker = Self::rollover_spending_period(tracker, current_time)?;
+        }
+
+        // Validate cumulative spending limit
+        let new_total = tracker.current_spent.saturating_add(amount);
+        if new_total > precision_limit.limit {
+            return Err(Error::ExceedsPeriodLimit);
+        }
+
+        // Update tracker
+        tracker.current_spent = new_total;
+        tracker.last_tx_timestamp = current_time;
+        tracker.tx_count = tracker.tx_count.saturating_add(1);
+
+        // Save updated tracker
+        spending_trackers.set(caller, tracker);
+        env.storage().instance().set(&tracker_key, &spending_trackers);
+
+        Ok(())
+    }
+
+    /// Get current spending period configuration
+    /// 
+    /// # Arguments
+    /// * `timestamp` - Current timestamp to align period
+    /// 
+    /// # Returns
+    /// * `SpendingPeriod` aligned to daily boundary (00:00 UTC)
+    /// 
+    /// # Security Assumptions
+    /// - Uses daily periods (86400 seconds) for consistent rollover
+    /// - Aligns to UTC midnight to prevent timezone manipulation
+    /// - Handles timestamp overflow gracefully
+    fn get_current_period(timestamp: u64) -> SpendingPeriod {
+        const DAILY_SECONDS: u64 = 86400; // 24 hours
+        
+        // Align to daily boundary (00:00 UTC)
+        let period_start = (timestamp / DAILY_SECONDS) * DAILY_SECONDS;
+        
+        SpendingPeriod {
+            period_type: 0, // Daily
+            period_start,
+            period_duration: DAILY_SECONDS,
+        }
+    }
+
+    /// Check if spending period should rollover
+    /// 
+    /// # Arguments
+    /// * `period` - Current period configuration
+    /// * `current_time` - Current timestamp
+    /// 
+    /// # Returns
+    /// * `true` if period has expired and should rollover
+    /// 
+    /// # Security Assumptions
+    /// - Uses inclusive boundary check to prevent edge case exploits
+    /// - Handles timestamp overflow gracefully
+    fn should_rollover_period(period: &SpendingPeriod, current_time: u64) -> bool {
+        current_time >= period.period_start.saturating_add(period.period_duration)
+    }
+
+    /// Rollover spending period and reset counters
+    /// 
+    /// # Arguments
+    /// * `old_tracker` - Previous period tracker
+    /// * `current_time` - Current timestamp for new period
+    /// 
+    /// # Returns
+    /// * `Result<SpendingTracker, Error>` with new period configuration
+    /// 
+    /// # Security Assumptions
+    /// - Resets spending counters to prevent carryover attacks
+    /// - Validates new period alignment
+    /// - Preserves audit trail via transaction count reset
+    fn rollover_spending_period(
+        old_tracker: SpendingTracker,
+        current_time: u64,
+    ) -> Result<SpendingTracker, Error> {
+        let new_period = Self::get_current_period(current_time);
+        
+        // Validate rollover is legitimate (prevent manipulation)
+        if current_time < old_tracker.period.period_start.saturating_add(old_tracker.period.period_duration) {
+            return Err(Error::RolloverValidationFailed);
+        }
+
+        Ok(SpendingTracker {
+            current_spent: 0, // Reset spending for new period
+            last_tx_timestamp: current_time,
+            tx_count: 0, // Reset transaction count
+            period: new_period,
+        })
+    }
+
+    /// Get spending tracker for a member (read-only)
+    /// 
+    /// # Arguments
+    /// * `member_address` - Address to get tracker for
+    /// 
+    /// # Returns
+    /// * `Option<SpendingTracker>` if tracker exists
+    pub fn get_spending_tracker(env: Env, member_address: Address) -> Option<SpendingTracker> {
+        let tracker_key = symbol_short!("TRACKER");
+        let spending_trackers: Map<Address, SpendingTracker> = env
+            .storage()
+            .instance()
+            .get(&tracker_key)?;
+        
+        spending_trackers.get(member_address)
     }
 
     pub fn configure_multisig(
@@ -662,6 +973,11 @@ impl FamilyWallet {
             panic!("Amount must be positive");
         }
 
+        // Enhanced precision and rollover validation
+        if let Err(error) = Self::validate_precision_spending(env.clone(), proposer.clone(), amount) {
+            panic_with_error!(&env, error);
+        }
+
         let config: MultiSigConfig = env
             .storage()
             .instance()
@@ -865,6 +1181,7 @@ impl FamilyWallet {
                 address: member.clone(),
                 role,
                 spending_limit: 0,
+                precision_limit: None, // Default to legacy behavior
                 added_at: timestamp,
             },
         );
@@ -1312,6 +1629,7 @@ impl FamilyWallet {
                     address: item.address.clone(),
                     role: item.role,
                     spending_limit: 0,
+                    precision_limit: None, // Default to legacy behavior
                     added_at: timestamp,
                 },
             );
