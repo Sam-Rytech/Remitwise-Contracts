@@ -40,6 +40,11 @@ pub enum RemittanceSplitError {
     UntrustedTokenContract = 12,
     /// A destination account is the same as the sender, which would be a no-op transfer.
     SelfTransferNotAllowed = 13,
+    DeadlineExpired = 14,
+
+    RequestHashMismatch = 15,
+
+    NonceAlreadyUsed = 16,
 }
 
 #[derive(Clone)]
@@ -61,6 +66,12 @@ pub struct AccountGroup {
 // Storage TTL constants
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 17280; // ~1 day
 const INSTANCE_BUMP_AMOUNT: u32 = 518400; // ~30 days
+/// Key for the per-address used-nonce bitmap (Map<Address, Vec<u64>>).
+const USED_NONCES_KEY: &str = "USED_N";
+/// Maximum number of used nonces tracked per address before the oldest are pruned.
+const MAX_USED_NONCES_PER_ADDR: u32 = 256;
+/// Maximum ledger seconds a signed request may remain valid after creation.
+const MAX_DEADLINE_WINDOW_SECS: u64 = 3600; // 1 hour
 
 /// Split configuration with owner tracking for access control
 #[derive(Clone)]
@@ -253,16 +264,16 @@ impl RemittanceSplit {
         env.storage().instance().get(&symbol_short!("UPG_ADM"))
     }
     /// Set or transfer the upgrade admin role.
-    /// 
+    ///
     /// # Security Requirements
     /// - If no upgrade admin exists, only the contract owner can set the initial admin
     /// - If upgrade admin exists, only the current upgrade admin can transfer to a new admin
     /// - Caller must be authenticated via require_auth()
-    /// 
+    ///
     /// # Parameters
     /// - `caller`: The address attempting to set the upgrade admin
     /// - `new_admin`: The address to become the new upgrade admin
-    /// 
+    ///
     /// # Returns
     /// - `Ok(())` on successful admin transfer
     /// - `Err(RemittanceSplitError::Unauthorized)` if caller lacks permission
@@ -273,19 +284,19 @@ impl RemittanceSplit {
         new_admin: Address,
     ) -> Result<(), RemittanceSplitError> {
         caller.require_auth();
-        
+
         let config: SplitConfig = env
             .storage()
             .instance()
             .get(&symbol_short!("CONFIG"))
             .ok_or(RemittanceSplitError::NotInitialized)?;
-        
+
         let current_upgrade_admin = Self::get_upgrade_admin(&env);
-        
+
         // Authorization logic:
         // 1. If no upgrade admin exists, only contract owner can set initial admin
         // 2. If upgrade admin exists, only current upgrade admin can transfer
-        match current_upgrade_admin {
+        match current_upgrade_admin.clone() {
             None => {
                 // Initial admin setup - only owner can set
                 if config.owner != caller {
@@ -299,22 +310,22 @@ impl RemittanceSplit {
                 }
             }
         }
-        
+
         env.storage()
             .instance()
             .set(&symbol_short!("UPG_ADM"), &new_admin);
-        
+
         // Emit admin transfer event for audit trail
         env.events().publish(
             (symbol_short!("split"), symbol_short!("adm_xfr")),
             (current_upgrade_admin, new_admin.clone()),
         );
-        
+
         Ok(())
     }
 
     /// Get the current upgrade admin address.
-    /// 
+    ///
     /// # Returns
     /// - `Some(Address)` if upgrade admin is set
     /// - `None` if no upgrade admin has been configured
@@ -590,6 +601,8 @@ impl RemittanceSplit {
         usdc_contract: Address,
         from: Address,
         nonce: u64,
+        deadline: u64,
+        request_hash: u64,
         accounts: AccountGroup,
         total_amount: i128,
     ) -> Result<bool, RemittanceSplitError> {
@@ -635,7 +648,14 @@ impl RemittanceSplit {
         }
 
         // 8. Replay protection.
-        Self::require_nonce(&env, &from, nonce)?;
+        let expected_hash = Self::compute_request_hash(
+            symbol_short!("distrib"),
+            from.clone(),
+            nonce,
+            total_amount,
+            deadline,
+        );
+        Self::require_nonce_hardened(&env, &from, nonce, deadline, request_hash, expected_hash)?;
 
         // 9. Calculate split amounts and execute transfers.
         let amounts = Self::calculate_split_amounts(&env, total_amount, false)?;
@@ -817,8 +837,134 @@ impl RemittanceSplit {
         Ok(())
     }
 
+    /// Hardened nonce validation with three layers of replay protection:
+    ///
+    /// 1. **Deadline check** — rejects requests whose `deadline` is in the past
+    ///    or further than `MAX_DEADLINE_WINDOW_SECS` in the future (stale or
+    ///    pre-signed too far ahead).
+    /// 2. **Sequential counter** — the nonce must equal `get_nonce(address)`.
+    /// 3. **Used-nonce set** — the nonce must not appear in the per-address
+    ///    consumed set, preventing double-spend even if the counter is reset
+    ///    via snapshot import.
+    /// 4. **Request hash binding** — `request_hash` must equal the caller's
+    ///    expected fingerprint; prevents parameter-swap replay attacks where
+    ///    a valid nonce is reused with different arguments.
+    ///
+    /// # Arguments
+    /// * `address`      — The signing address
+    /// * `nonce`        — The nonce being consumed
+    /// * `deadline`     — Ledger timestamp after which the request expires
+    /// * `request_hash` — Caller-computed binding hash (see `compute_request_hash`)
+    /// * `expected_hash`— Hash the contract recomputes from its own parameters
+    fn require_nonce_hardened(
+        env: &Env,
+        address: &Address,
+        nonce: u64,
+        deadline: u64,
+        request_hash: u64,
+        expected_hash: u64,
+    ) -> Result<(), RemittanceSplitError> {
+        let now = env.ledger().timestamp();
+
+        // 1. Deadline: must be in the future but not too far ahead
+        if deadline <= now {
+            return Err(RemittanceSplitError::DeadlineExpired);
+        }
+        if deadline > now + MAX_DEADLINE_WINDOW_SECS {
+            return Err(RemittanceSplitError::DeadlineExpired);
+        }
+
+        // 2. Sequential counter
+        Self::require_nonce(env, address, nonce)?;
+
+        // 3. Used-nonce double-spend check
+        if Self::is_nonce_used(env, address, nonce) {
+            return Err(RemittanceSplitError::NonceAlreadyUsed);
+        }
+
+        // 4. Request hash binding
+        if request_hash != expected_hash {
+            return Err(RemittanceSplitError::RequestHashMismatch);
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if `nonce` has already been consumed for `address`.
+    fn is_nonce_used(env: &Env, address: &Address, nonce: u64) -> bool {
+        let key = symbol_short!("USED_N");
+        let map: Option<Map<Address, Vec<u64>>> = env.storage().instance().get(&key);
+        match map {
+            None => false,
+            Some(m) => match m.get(address.clone()) {
+                None => false,
+                Some(used) => used.contains(nonce),
+            },
+        }
+    }
+
+    fn mark_nonce_used(env: &Env, address: &Address, nonce: u64) {
+        let key = symbol_short!("USED_N");
+        let mut map: Map<Address, Vec<u64>> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Map::new(env));
+
+        let mut used: Vec<u64> = map.get(address.clone()).unwrap_or_else(|| Vec::new(env));
+
+        // Evict oldest if at capacity
+        if used.len() >= MAX_USED_NONCES_PER_ADDR {
+            let mut trimmed = Vec::new(env);
+            for i in 1..used.len() {
+                if let Some(v) = used.get(i) {
+                    trimmed.push_back(v);
+                }
+            }
+            used = trimmed;
+        }
+
+        used.push_back(nonce);
+        map.set(address.clone(), used);
+        env.storage().instance().set(&key, &map);
+    }
+
+    /// Compute a deterministic u64 request fingerprint.
+    ///
+    /// Binds: operation symbol bits + nonce + amount + deadline.
+    /// Works in `no_std` — uses `Symbol::to_val()` to extract the raw
+    /// packed bits instead of `to_string()`, which requires std's `ToString`.
+    ///
+    /// # Arguments
+    /// * `operation` — Short symbol tag (e.g. `symbol_short!("distrib")`)
+    /// * `nonce`     — The request nonce
+    /// * `amount`    — Token amount (0 for non-monetary operations)
+    /// * `deadline`  — Request expiry ledger timestamp
+    pub fn compute_request_hash(
+        operation: Symbol,
+        _caller: Address,
+        nonce: u64,
+        amount: i128,
+        deadline: u64,
+    ) -> u64 {
+        let op_bits: u64 = operation.to_val().get_payload();
+
+        let amt_lo = amount as u64;
+        let amt_hi = (amount >> 64) as u64;
+
+        op_bits
+            .wrapping_add(nonce)
+            .wrapping_add(amt_lo)
+            .wrapping_add(amt_hi)
+            .wrapping_add(deadline)
+            .wrapping_mul(1_000_000_007)
+    }
+
     fn increment_nonce(env: &Env, address: &Address) -> Result<(), RemittanceSplitError> {
         let current = Self::get_nonce_value(env, address);
+        // Mark current nonce as used BEFORE advancing the counter
+        Self::mark_nonce_used(env, address, current);
+
         let next = current
             .checked_add(1)
             .ok_or(RemittanceSplitError::Overflow)?;

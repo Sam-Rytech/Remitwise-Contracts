@@ -99,7 +99,7 @@ Initializes the split configuration and pins the trusted USDC token contract add
 - Percentages must sum to exactly 100.
 - Can only be called once (`AlreadyInitialized` on repeat).
 
-#### `distribute_usdc(env, usdc_contract, from, nonce, accounts, total_amount) -> bool`
+#### `distribute_usdc(env, usdc_contract, from, nonce, deadline, request_hash, accounts, total_amount) -> bool`
 
 Distributes USDC from `from` to the four split destination accounts.
 
@@ -110,7 +110,7 @@ Distributes USDC from `from` to the four split destination accounts.
 4. `usdc_contract == config.usdc_contract`
 5. `total_amount > 0`
 6. No destination account equals `from`
-7. Nonce matches
+7. Hardened replay protection (matches `nonce`, ensures `deadline` is valid, checks `request_hash`, prevents duplicate uses)
 
 **Errors:**
 | Error | Condition |
@@ -120,7 +120,10 @@ Distributes USDC from `from` to the four split destination accounts.
 | `SelfTransferNotAllowed` | Any destination account equals `from` |
 | `InvalidAmount` | `total_amount` ≤ 0 |
 | `NotInitialized` | Contract not yet initialized |
-| `InvalidNonce` | Replay attempt |
+| `InvalidNonce` | Sequential nonce incorrect |
+| `DeadlineExpired` | Request timestamp exceeded the `deadline` |
+| `RequestHashMismatch` | Sent `request_hash` does not bind the correct parameters |
+| `NonceAlreadyUsed` | Replay attempt within duplicate window |
 
 #### `update_split(env, caller, nonce, spending_percent, savings_percent, bills_percent, insurance_percent) -> bool`
 
@@ -154,8 +157,11 @@ pub enum RemittanceSplitError {
     ChecksumMismatch = 9,
     InvalidDueDate = 10,
     ScheduleNotFound = 11,
-    UntrustedTokenContract = 12,   // NEW: token substitution attack prevention
-    SelfTransferNotAllowed = 13,   // NEW: self-transfer guard
+    UntrustedTokenContract = 12,   // token substitution attack prevention
+    SelfTransferNotAllowed = 13,   // self-transfer guard
+    DeadlineExpired = 14,          // request expired
+    RequestHashMismatch = 15,      // request hash binding failed
+    NonceAlreadyUsed = 16,         // replay duplicate protection
 }
 ```
 
