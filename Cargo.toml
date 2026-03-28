@@ -11,7 +11,8 @@ members = [
     "data_migration",
     "orchestrator",
     "cli",
-
+    "scenarios",
+    "remitwise-common",
     "testutils",
     "integration_tests",
 ]
@@ -24,6 +25,7 @@ default-members = [
 resolver = "2"
 
 [dependencies]
+soroban-sdk = "21.7.0"
 soroban-sdk = "21.0.0"
 ed25519-dalek = "2.1.1"
 remittance_split = { path = "./remittance_split" }
@@ -32,6 +34,8 @@ orchestrator = { path = "./orchestrator" }
 # bill_payments, insurance, family_wallet, reporting excluded: depend on remitwise-common (sdk v20)
 
 [dev-dependencies]
+soroban-sdk = { version = "21.7.0", features = ["testutils"] }
+[patch.crates-io]
 soroban-sdk = { version = "=21.7.7", features = ["testutils"] }
 
 [profile.release]

@@ -1,7 +1,7 @@
 // Standalone test for gas benchmark implementation
 // This test validates the benchmark functions work correctly without external dependencies
 
-use remittance_split::{RemittanceSplit, RemittanceSplitClient};
+use remittance_split::{RemittanceSplit, RemittanceSplitClient, RemittanceSplitError};
 use soroban_sdk::testutils::{Address as AddressTrait, EnvTestConfig, Ledger, LedgerInfo};
 use soroban_sdk::{Address, Env};
 
@@ -64,6 +64,8 @@ fn test_create_schedule_gas_measurement() {
         client.create_remittance_schedule(&owner, &amount, &next_due, &interval)
     });
 
+    // Validate the operation succeeded
+    let schedule_id = result;
     assert_eq!(schedule_id, 1, "First schedule should have ID 1");
 
     // Validate gas measurements are reasonable
@@ -99,7 +101,8 @@ fn test_modify_schedule_gas_measurement() {
         client.modify_remittance_schedule(&owner, &schedule_id, &new_amount, &new_next_due, &new_interval)
     });
 
-    assert!(result, "Schedule modification should return true");
+    // Validate the operation succeeded
+    assert!(result, "Modification should return true");
 
     // Validate gas measurements
     assert!(cpu > 0, "CPU cost should be measured");
@@ -130,6 +133,7 @@ fn test_cancel_schedule_gas_measurement() {
         client.cancel_remittance_schedule(&owner, &schedule_id)
     });
 
+    // Validate the operation succeeded
     assert!(result, "Cancellation should return true");
 
     // Validate gas measurements
@@ -181,7 +185,7 @@ fn test_query_schedules_with_data_gas_measurement() {
         let next_due = env.ledger().timestamp() + 86400 * i;
         let interval = 2_592_000u64;
         
-        client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
+        let result = client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
     }
 
     // Measure query with data
@@ -251,7 +255,7 @@ fn test_gas_scaling_with_multiple_schedules() {
         let next_due = env.ledger().timestamp() + 86400 * i;
         let interval = 2_592_000u64;
         
-        client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
+        let _result = client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
     }
 
     // Measure creating the 11th schedule (with existing storage)
@@ -263,6 +267,8 @@ fn test_gas_scaling_with_multiple_schedules() {
         client.create_remittance_schedule(&owner, &amount, &next_due, &interval)
     });
 
+    // Validate the operation succeeded
+    let schedule_id = result;
     assert_eq!(schedule_id, 11, "Should be the 11th schedule");
 
     // Validate gas measurements show reasonable scaling
@@ -290,7 +296,7 @@ fn test_data_isolation_security() {
         let next_due = env.ledger().timestamp() + 86400 * i;
         let interval = 2_592_000u64;
         
-        client.create_remittance_schedule(&owner1, &amount, &next_due, &interval);
+        let _result = client.create_remittance_schedule(&owner1, &amount, &next_due, &interval);
     }
 
     // Create schedules for owner2
@@ -299,7 +305,7 @@ fn test_data_isolation_security() {
         let next_due = env.ledger().timestamp() + 86400 * i;
         let interval = 604_800u64;
         
-        client.create_remittance_schedule(&owner2, &amount, &next_due, &interval);
+        let _result = client.create_remittance_schedule(&owner2, &amount, &next_due, &interval);
     }
 
     // Validate data isolation
@@ -332,30 +338,30 @@ fn test_input_validation_security() {
 
     // Test invalid amount (zero)
     let result = client.try_create_remittance_schedule(
-        &owner,
+        &owner, 
         &0i128, // Invalid: zero amount
         &(env.ledger().timestamp() + 86400),
         &2_592_000u64
     );
-    assert!(result.is_err(), "Zero amount should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidAmount)), "Zero amount should be rejected");
 
     // Test invalid amount (negative)
     let result = client.try_create_remittance_schedule(
-        &owner,
+        &owner, 
         &(-1000i128), // Invalid: negative amount
         &(env.ledger().timestamp() + 86400),
         &2_592_000u64
     );
-    assert!(result.is_err(), "Negative amount should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidAmount)), "Negative amount should be rejected");
 
     // Test invalid due date (past)
     let result = client.try_create_remittance_schedule(
-        &owner,
-        &1000i128,
-        &(env.ledger().timestamp() - 86400), // Invalid: past date
+        &owner, 
+        &1000i128, 
+        &(env.ledger().timestamp() - 10), // Invalid: past due date
         &2_592_000u64
     );
-    assert!(result.is_err(), "Past due date should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidDueDate)), "Past due date should be rejected");
 
     // Test valid parameters work
     client.create_remittance_schedule(
@@ -364,6 +370,7 @@ fn test_input_validation_security() {
         &(env.ledger().timestamp() + 86400),
         &2_592_000u64
     );
+    assert!(result > 0, "Valid parameters should succeed");
 
     println!("✅ Input validation security verified");
 }
@@ -386,6 +393,7 @@ fn test_complete_schedule_lifecycle() {
     let (create_cpu, create_mem, schedule_id) = measure_gas(&env, || {
         client.create_remittance_schedule(&owner, &amount, &next_due, &interval)
     });
+    let schedule_id = schedule_id;
     println!("   Create - CPU: {}, Memory: {}", create_cpu, create_mem);
 
     // 2. Query single schedule
@@ -450,9 +458,9 @@ fn test_performance_stress() {
         let next_due = env.ledger().timestamp() + 86400 * i;
         let interval = 2_592_000u64;
         
-        client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
+        let result = client.create_remittance_schedule(&owner, &amount, &next_due, &interval);
+        let _result = (result, "Schedule {} creation should succeed", i);
     }
-
     // Measure query performance with 20 schedules
     let (cpu, mem, schedules) = measure_gas(&env, || {
         client.get_remittance_schedules(&owner)
