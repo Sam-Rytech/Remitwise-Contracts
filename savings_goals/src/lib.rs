@@ -88,6 +88,7 @@ pub struct SavingsSchedule {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavingsGoalsError {
     InvalidAmount = 1,
@@ -423,7 +424,7 @@ impl SavingsGoalContract {
             }
             Some(current_admin) => {
                 // Admin transfer - only current admin can transfer
-                if current_admin != &caller {
+                if *current_admin != caller {
                     panic!("Unauthorized: only current upgrade admin can transfer");
                 }
             }

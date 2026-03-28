@@ -133,6 +133,24 @@ Marks a bill as paid.
 
 **Errors:** BillNotFound, BillAlreadyPaid, Unauthorized
 
+#### `batch_pay_bills(env, caller, bill_ids) -> Result<u32, Error>`
+Pays multiple bills in a single batch with deterministic partial success reporting.
+
+**Semantics:**
+- **Partial Success**: If a bill is invalid (not found, unauthorized, or already paid), it is skipped and an error event is emitted. Valid bills are still processed.
+- **Atomic Validation**: Initial checks like `BatchTooLarge` or `ContractPaused` still revert the entire batch.
+
+**Parameters:**
+- `caller`: Address of the bill owner (must authorize)
+- `bill_ids`: Vector of bill IDs to pay
+
+**Returns:** Number of successfully paid bills.
+
+**Events:**
+- `paid`: Per-bill success event.
+- `f_pay_*`: Per-bill failure events (e.g., `f_pay_id`, `f_pay_auth`, `f_pay_pd`).
+- `batch_res`: Final summary with `(success_count, failure_count)`.
+
 #### `get_bill(env, bill_id) -> Option<Bill>`
 Retrieves a bill by ID.
 
