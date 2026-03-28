@@ -138,6 +138,9 @@ pub struct AccessAuditEntry {
 const CONTRACT_VERSION: u32 = 1;
 const MAX_ACCESS_AUDIT_ENTRIES: u32 = 100;
 const MAX_BATCH_MEMBERS: u32 = 30;
+const MAX_SIGNERS: u32 = 100;
+const MIN_THRESHOLD: u32 = 1;
+const MAX_THRESHOLD: u32 = 100;
 
 #[contracttype]
 #[derive(Clone)]
@@ -173,6 +176,12 @@ pub enum Error {
     MemberNotFound = 11,
     TransactionAlreadyExecuted = 12,
     InvalidSpendingLimit = 13,
+    ThresholdBelowMinimum = 14,
+    ThresholdAboveMaximum = 15,
+    SignersListEmpty = 16,
+    SignerNotMember = 17,
+    DuplicateSigner = 18,
+    TooManySigners = 19,
 }
 
 #[contractimpl]
@@ -433,6 +442,15 @@ impl FamilyWallet {
         amount <= member.spending_limit
     }
 
+    /// @notice Configure multisig parameters for a given transaction type.
+    /// @dev Validates threshold bounds, signer membership, and uniqueness.
+    ///      Returns `Result<bool, Error>` instead of panicking on invalid input.
+    /// @param caller Owner or Admin authorizing the configuration.
+    /// @param tx_type The transaction type to configure.
+    /// @param threshold Number of signatures required (MIN_THRESHOLD..=min(MAX_THRESHOLD, signer_count)).
+    /// @param signers List of authorized signers (must be family members, no duplicates).
+    /// @param spending_limit Non-negative spending cap for the configuration.
+    /// @return Ok(true) on success, or a specific Error variant on failure.
     pub fn configure_multisig(
         env: Env,
         caller: Address,
@@ -440,7 +458,7 @@ impl FamilyWallet {
         threshold: u32,
         signers: Vec<Address>,
         spending_limit: i128,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         caller.require_auth();
         Self::require_not_paused(&env);
 
@@ -451,23 +469,45 @@ impl FamilyWallet {
             .unwrap_or_else(|| panic!("Wallet not initialized"));
 
         if !Self::is_owner_or_admin_in_members(&env, &members, &caller) {
-            panic!("Only Owner or Admin can configure multi-sig");
+            return Err(Error::Unauthorized);
         }
 
-        // Validate threshold
         let signer_count = signers.len();
-        if threshold == 0 || threshold > signer_count {
-            panic!("Invalid threshold");
+
+        if signer_count == 0 {
+            return Err(Error::SignersListEmpty);
         }
 
+        if signer_count > MAX_SIGNERS {
+            return Err(Error::TooManySigners);
+        }
+
+        if threshold < MIN_THRESHOLD {
+            return Err(Error::ThresholdBelowMinimum);
+        }
+
+        if threshold > MAX_THRESHOLD {
+            return Err(Error::ThresholdAboveMaximum);
+        }
+
+        if threshold > signer_count {
+            return Err(Error::InvalidThreshold);
+        }
+
+        // Check signer membership and uniqueness in a single pass
+        let mut checked: Map<Address, bool> = Map::new(&env);
         for signer in signers.iter() {
             if members.get(signer.clone()).is_none() {
-                panic!("Signer must be a family member");
+                return Err(Error::SignerNotMember);
             }
+            if checked.get(signer.clone()).is_some() {
+                return Err(Error::DuplicateSigner);
+            }
+            checked.set(signer.clone(), true);
         }
 
         if spending_limit < 0 {
-            panic!("Spending limit must be non-negative");
+            return Err(Error::InvalidSpendingLimit);
         }
 
         Self::extend_instance_ttl(&env);
@@ -482,7 +522,7 @@ impl FamilyWallet {
             .instance()
             .set(&Self::get_config_key(tx_type), &config);
 
-        true
+        Ok(true)
     }
 
     pub fn propose_transaction(
