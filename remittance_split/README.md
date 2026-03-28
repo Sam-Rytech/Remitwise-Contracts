@@ -8,10 +8,14 @@ across spending, savings, bills, and insurance categories.
 `distribute_usdc` is the only function that moves funds. It enforces the following invariants
 in strict order before any token interaction occurs:
 
-1. **Auth first** — `from.require_auth()` is the very first operation; no state is read before
-   the caller proves authority.
-2. **Pause guard** — the contract must not be globally paused.
-3. **Owner-only** — `from` must equal the address stored as `config.owner` at initialization.
+1. **Domain-Separated Auth** — `initialize_split` uses a structured `InitializationPayload`
+   containing the network ID, contract address, owner, and nonce. This payload must be
+   explicitly signed, preventing the authorization from being replayed on different contract
+   instances or Stellar networks.
+2. **Auth first** — For other operations, `caller.require_auth()` is the very first operation;
+   no state is read before the caller proves authority.
+3. **Pause guard** — the contract must not be globally paused.
+4. **Owner-only** — `from` must equal the address stored as `config.owner` at initialization.
    Any other address is rejected with `Unauthorized`, even if it can self-authorize.
 4. **Trusted token** — `usdc_contract` must match the address pinned in `config.usdc_contract`
    at initialization time. Passing a different address returns `UntrustedTokenContract`,

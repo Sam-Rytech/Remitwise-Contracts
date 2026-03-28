@@ -5,7 +5,7 @@ mod test;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, vec,
-    Address, Env, Map, Symbol, Vec,
+    Address, BytesN, Env, IntoVal, Map, Symbol, Vec,
 };
 
 // Event topics
@@ -359,7 +359,7 @@ impl RemittanceSplit {
         // Emit admin transfer event for audit trail
         env.events().publish(
             (symbol_short!("split"), symbol_short!("adm_xfr")),
-            (current_upgrade_admin, new_admin.clone()),
+            (current_upgrade_admin.clone(), new_admin.clone()),
         );
 
         Ok(())
@@ -440,7 +440,20 @@ impl RemittanceSplit {
         bills_percent: u32,
         insurance_percent: u32,
     ) -> Result<bool, RemittanceSplitError> {
-        owner.require_auth();
+        let payload = SplitAuthPayload {
+            domain_id: symbol_short!("init"),
+            network_id: env.ledger().network_id(),
+            contract_addr: env.current_contract_address(),
+            owner_addr: owner.clone(),
+            nonce_val: nonce,
+            usdc_contract: usdc_contract.clone(),
+            spending_percent,
+            savings_percent,
+            bills_percent,
+            insurance_percent,
+        };
+        owner.require_auth_for_args(vec![&env, payload.into_val(&env)]);
+
         Self::require_not_paused(&env)?;
         Self::require_nonce(&env, &owner, nonce)?;
 
