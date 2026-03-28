@@ -1,7 +1,7 @@
 // Standalone test for gas benchmark implementation
 // This test validates the benchmark functions work correctly without external dependencies
 
-use remittance_split::{RemittanceSplit, RemittanceSplitClient};
+use remittance_split::{RemittanceSplit, RemittanceSplitClient, RemittanceSplitError};
 use soroban_sdk::testutils::{Address as AddressTrait, EnvTestConfig, Ledger, LedgerInfo};
 use soroban_sdk::{Address, Env};
 
@@ -343,7 +343,7 @@ fn test_input_validation_security() {
         &(env.ledger().timestamp() + 86400), 
         &2_592_000u64
     );
-    assert!(result.is_err(), "Zero amount should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidAmount)), "Zero amount should be rejected");
 
     // Test invalid amount (negative)
     let result = client.try_create_remittance_schedule(
@@ -352,7 +352,7 @@ fn test_input_validation_security() {
         &(env.ledger().timestamp() + 86400), 
         &2_592_000u64
     );
-    assert!(result.is_err(), "Negative amount should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidAmount)), "Negative amount should be rejected");
 
     // Test invalid due date (past)
     let result = client.try_create_remittance_schedule(
@@ -361,7 +361,7 @@ fn test_input_validation_security() {
         &(env.ledger().timestamp() - 10), // Invalid: past due date
         &2_592_000u64
     );
-    assert!(result.is_err(), "Past due date should be rejected");
+    assert_eq!(result, Err(Ok(RemittanceSplitError::InvalidDueDate)), "Past due date should be rejected");
 
     // Test valid parameters work
     let result = client.create_remittance_schedule(

@@ -203,12 +203,22 @@ impl RemittanceSplit {
         }
     }
 
+    /// Set the pause administrator responsible for emergency pause control.
+    ///
+    /// # Arguments
+    /// * `caller` - Split owner address (must authorize)
+    /// * `new_admin` - Address that will gain pause and unpause authority
+    ///
+    /// # Errors
+    /// - `NotInitialized` if the split has not been initialized yet
+    /// - `Unauthorized` if `caller` is not the owner or the contract is currently paused
     pub fn set_pause_admin(
         env: Env,
         caller: Address,
         new_admin: Address,
     ) -> Result<(), RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
         let config: SplitConfig = env
             .storage()
             .instance()
@@ -222,8 +232,18 @@ impl RemittanceSplit {
             .set(&symbol_short!("PAUSE_ADM"), &new_admin);
         Ok(())
     }
+
+    /// Pause all state-changing split entrypoints until `unpause` is called.
+    ///
+    /// # Arguments
+    /// * `caller` - Pause administrator address (must authorize)
+    ///
+    /// # Errors
+    /// - `NotInitialized` if the split has not been initialized yet
+    /// - `Unauthorized` if `caller` is not the active pause admin or the contract is already paused
     pub fn pause(env: Env, caller: Address) -> Result<(), RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
         let config: SplitConfig = env
             .storage()
             .instance()
@@ -240,6 +260,17 @@ impl RemittanceSplit {
             .publish((symbol_short!("split"), symbol_short!("paused")), ());
         Ok(())
     }
+
+    /// Resume state-changing split entrypoints after an emergency pause.
+    ///
+    /// This is intentionally the only mutating entrypoint that remains callable while paused.
+    ///
+    /// # Arguments
+    /// * `caller` - Pause administrator address (must authorize)
+    ///
+    /// # Errors
+    /// - `NotInitialized` if the split has not been initialized yet
+    /// - `Unauthorized` if `caller` is not the active pause admin
     pub fn unpause(env: Env, caller: Address) -> Result<(), RemittanceSplitError> {
         caller.require_auth();
         let config: SplitConfig = env
@@ -305,7 +336,6 @@ impl RemittanceSplit {
         // 2. If upgrade admin exists, only current upgrade admin can transfer
         match &current_upgrade_admin {
             None => {
-                // Initial admin setup - only owner can set
                 if config.owner != caller {
                     return Err(RemittanceSplitError::Unauthorized);
                 }
@@ -339,12 +369,23 @@ impl RemittanceSplit {
     pub fn get_upgrade_admin_public(env: Env) -> Option<Address> {
         Self::get_upgrade_admin(&env)
     }
+
+    /// Update the contract version marker used for migrations and upgrade coordination.
+    ///
+    /// # Arguments
+    /// * `caller` - Upgrade administrator address (must authorize)
+    /// * `new_version` - Version marker to persist in instance storage
+    ///
+    /// # Errors
+    /// - `NotInitialized` if the split has not been initialized yet
+    /// - `Unauthorized` if `caller` is not the active upgrade admin or the contract is paused
     pub fn set_version(
         env: Env,
         caller: Address,
         new_version: u32,
     ) -> Result<(), RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
         let config: SplitConfig = env
             .storage()
             .instance()
@@ -505,9 +546,12 @@ impl RemittanceSplit {
             timestamp: env.ledger().timestamp(),
         };
         env.events().publish((SPLIT_INITIALIZED,), event);
-        env.events()
-            .publish((symbol_short!("split"), SplitEvent::Updated), caller);
+        env.events().publish(
+            (symbol_short!("split"), SplitEvent::Updated),
+            caller.clone(),
+        );
 
+        Self::increment_nonce(&env, &caller)?;
         Ok(true)
     }
 
@@ -755,6 +799,20 @@ impl RemittanceSplit {
         }))
     }
 
+    /// Import a previously exported snapshot after validating version and checksum.
+    ///
+    /// # Arguments
+    /// * `caller` - Split owner address (must authorize)
+    /// * `nonce` - Replay-protection nonce (must equal `get_nonce(caller)`)
+    /// * `snapshot` - Serialized configuration snapshot to restore
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `caller` is not the split owner or the contract is paused
+    /// - `InvalidNonce` if the replay-protection nonce does not match
+    /// - `UnsupportedVersion` if the snapshot schema version is not supported
+    /// - `ChecksumMismatch` if the snapshot checksum is invalid
+    /// - `PercentagesDoNotSumTo100` if the imported configuration is malformed
+    /// - `NotInitialized` if no existing configuration is present to authorize the caller
     pub fn import_snapshot(
         env: Env,
         caller: Address,
@@ -762,6 +820,7 @@ impl RemittanceSplit {
         snapshot: ExportSnapshot,
     ) -> Result<bool, RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
         Self::require_nonce(&env, &caller, nonce)?;
 
         // Accept any schema_version within the supported range for backward/forward compat.
@@ -1119,6 +1178,18 @@ impl RemittanceSplit {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    /// Create a new automatic remittance schedule for the split owner.
+    ///
+    /// # Arguments
+    /// * `owner` - Split owner address (must authorize)
+    /// * `amount` - Amount to distribute on each execution
+    /// * `next_due` - Unix timestamp of the next execution
+    /// * `interval` - Recurrence interval in seconds; `0` creates a one-off schedule
+    ///
+    /// # Errors
+    /// - `InvalidAmount` if `amount` is not positive
+    /// - `InvalidDueDate` if `next_due` is not in the future
+    /// - `Unauthorized` if the contract is paused
     pub fn create_remittance_schedule(
         env: Env,
         owner: Address,
@@ -1127,6 +1198,7 @@ impl RemittanceSplit {
         interval: u64,
     ) -> Result<u32, RemittanceSplitError> {
         owner.require_auth();
+        Self::require_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(RemittanceSplitError::InvalidAmount);
@@ -1191,6 +1263,20 @@ impl RemittanceSplit {
         Ok(next_schedule_id)
     }
 
+    /// Modify an existing remittance schedule owned by `caller`.
+    ///
+    /// # Arguments
+    /// * `caller` - Schedule owner address (must authorize)
+    /// * `schedule_id` - Identifier returned by `create_remittance_schedule`
+    /// * `amount` - Replacement schedule amount
+    /// * `next_due` - Replacement next due timestamp
+    /// * `interval` - Replacement recurrence interval in seconds
+    ///
+    /// # Errors
+    /// - `InvalidAmount` if `amount` is not positive
+    /// - `InvalidDueDate` if `next_due` is not in the future
+    /// - `ScheduleNotFound` if `schedule_id` does not exist
+    /// - `Unauthorized` if `caller` does not own the schedule or the contract is paused
     pub fn modify_remittance_schedule(
         env: Env,
         caller: Address,
@@ -1200,6 +1286,7 @@ impl RemittanceSplit {
         interval: u64,
     ) -> Result<bool, RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
 
         if amount <= 0 {
             return Err(RemittanceSplitError::InvalidAmount);
@@ -1240,12 +1327,22 @@ impl RemittanceSplit {
         Ok(true)
     }
 
+    /// Cancel an existing remittance schedule owned by `caller`.
+    ///
+    /// # Arguments
+    /// * `caller` - Schedule owner address (must authorize)
+    /// * `schedule_id` - Identifier returned by `create_remittance_schedule`
+    ///
+    /// # Errors
+    /// - `ScheduleNotFound` if `schedule_id` does not exist
+    /// - `Unauthorized` if `caller` does not own the schedule or the contract is paused
     pub fn cancel_remittance_schedule(
         env: Env,
         caller: Address,
         schedule_id: u32,
     ) -> Result<bool, RemittanceSplitError> {
         caller.require_auth();
+        Self::require_not_paused(&env)?;
 
         let mut schedule: RemittanceSchedule = env
             .storage()
