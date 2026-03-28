@@ -333,7 +333,7 @@ fn test_batch_add_with_large_amounts() {
     });
 
     env.mock_all_auths();
-    let count = client.batch_add_to_goals(&owner, &contributions);
+    let count = client.batch_add_to_goals(&owner, &contributions).unwrap();
 
     assert_eq!(count, 3);
 

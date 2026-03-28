@@ -414,19 +414,12 @@ impl SavingsGoalContract {
         // Authorization logic:
         // 1. If no upgrade admin exists, caller must equal new_admin (bootstrap)
         // 2. If upgrade admin exists, only current upgrade admin can transfer
-        match current_upgrade_admin {
-            None => {
-                // Bootstrap pattern - caller must be setting themselves as admin
-                if caller != new_admin {
-                    panic!("Unauthorized: bootstrap requires caller == new_admin");
-                }
+        if let Some(ref current_admin) = current_upgrade_admin {
+            if *current_admin != caller {
+                panic!("Unauthorized: only current upgrade admin can transfer");
             }
-            Some(current_admin) => {
-                // Admin transfer - only current admin can transfer
-                if current_admin != caller {
-                    panic!("Unauthorized: only current upgrade admin can transfer");
-                }
-            }
+        } else if caller != new_admin {
+            panic!("Unauthorized: bootstrap requires caller == new_admin");
         }
         
         env.storage()
