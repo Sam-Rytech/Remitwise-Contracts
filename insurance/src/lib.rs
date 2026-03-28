@@ -351,18 +351,19 @@ impl Insurance {
             panic!("unauthorized");
         }
 
-        // Deduplication: skip if tag already present
+        // Deduplication: compare by reference so `tag` is not moved
         for existing in policy.tags.iter() {
             if existing == tag {
                 return; // already exists — no write, no event
             }
         }
 
+        // `tag` is still owned here — move it into storage then into the event
         policy.tags.push_back(tag.clone());
         policies.set(policy_id, policy);
         Self::save_policies(&env, &policies);
 
-        // Emit TagAdded event
+        // Move `tag` into the event payload — only first (and only) move
         env.events().publish(
             (symbol_short!("insure"), symbol_short!("tag_added")),
             (policy_id, tag),
@@ -410,7 +411,7 @@ impl Insurance {
             panic!("unauthorized");
         }
 
-        // Find and remove the tag
+        // Find and remove the tag — compare by reference so `tag` is not moved
         let mut found = false;
         let mut new_tags = Vec::new(&env);
         for existing in policy.tags.iter() {
@@ -422,7 +423,8 @@ impl Insurance {
         }
 
         if !found {
-            // Graceful: emit Tag Not Found event, do not panic
+            // Graceful: emit Tag Not Found event, do not panic.
+            // Move `tag` here — this is the only move on the not-found path.
             env.events().publish(
                 (symbol_short!("insure"), symbol_short!("tag_miss")),
                 (policy_id, tag),
@@ -434,7 +436,7 @@ impl Insurance {
         policies.set(policy_id, policy);
         Self::save_policies(&env, &policies);
 
-        // Emit TagRemoved event
+        // Move `tag` here — only move on the found path
         env.events().publish(
             (symbol_short!("insure"), symbol_short!("tag_rmvd")),
             (policy_id, tag),
